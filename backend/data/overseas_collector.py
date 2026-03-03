@@ -5,6 +5,7 @@ CpSvrNew8300을 통해 해외 자산의 과거 일봉 시계열을 수집하고
 SQLite 데이터베이스에 저장.
 """
 import logging
+import time
 from typing import List
 
 from backend.config.settings import Settings
@@ -72,7 +73,41 @@ class OverseasCollector:
         logger.info(f"Overseas batch collection: {success_count}/{len(codes)} succeeded")
         return success_count
 
-    def collect_incremental(self, codes: List[str]) -> int:
+    def collect_insert(self, codes: List[str]) -> int:
+        """
+        신규 수집: DB에 마지막 수집일이 없는 종목만 전체 수집.
+
+        Parameters:
+            codes: 해외 코드 리스트
+        Returns:
+            수집 성공한 종목 수
+        """
+        success_count = 0
+        skipped_count = 0
+
+        for code in codes:
+            try:
+                last_date = self.db.get_last_date("overseas_daily", "code", code)
+                if last_date is not None:
+                    skipped_count += 1
+                    continue
+
+                df = self.client.fetch_overseas_chart(code, count=Settings.DEFAULT_DAILY_COUNT)
+
+                if not df.empty:
+                    self.db.upsert_overseas_daily(code, df)
+                    success_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed overseas insert for {code}: {e}")
+                continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
+
+        logger.info(f"Overseas Insert: {success_count} succeeded, {skipped_count} skipped")
+        return success_count
+
+    def collect_update(self, codes: List[str]) -> int:
         """
         증분 수집: 마지막 수집일 이후 데이터만 추가.
 
@@ -82,22 +117,26 @@ class OverseasCollector:
             수집 성공한 종목 수
         """
         success_count = 0
+        skipped_count = 0
 
         for code in codes:
             try:
                 last_date = self.db.get_last_date("overseas_daily", "code", code)
-                if last_date is not None:
-                    df = self.client.fetch_overseas_chart(code, count=30)
-                else:
-                    df = self.client.fetch_overseas_chart(code, count=Settings.DEFAULT_DAILY_COUNT)
+                if last_date is None:
+                    skipped_count += 1
+                    continue
+
+                df = self.client.fetch_overseas_chart(code, count=30)
 
                 if not df.empty:
                     self.db.upsert_overseas_daily(code, df)
                     success_count += 1
 
             except Exception as e:
-                logger.error(f"Failed incremental overseas for {code}: {e}")
+                logger.error(f"Failed overseas update for {code}: {e}")
                 continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
-        logger.info(f"Overseas incremental: {success_count}/{len(codes)} succeeded")
+        logger.info(f"Overseas Update: {success_count} succeeded, {skipped_count} skipped")
         return success_count

@@ -49,13 +49,15 @@ class StockCollector:
             except Exception as e:
                 logger.error(f"Failed to collect daily for {ticker}: {e}")
                 continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Daily collection complete: {success_count}/{len(tickers)} succeeded")
         return success_count
 
-    def collect_daily_incremental(self, tickers: List[str]) -> int:
+    def collect_daily_insert(self, tickers: List[str]) -> int:
         """
-        증분 수집: 마지막 수집일 이후 데이터만 추가 수집.
+        신규 수집: DB에 마지막 수집일이 없는 종목만 전체(DEFAULT) 수집.
 
         Parameters:
             tickers: 종목코드 리스트
@@ -63,26 +65,65 @@ class StockCollector:
             수집 성공한 종목 수
         """
         success_count = 0
+        skipped_count = 0
 
         for ticker in tickers:
             try:
                 last_date = self.db.get_last_date("stock_daily", "ticker", ticker)
-                # 마지막 수집일이 있으면 그 이후 데이터만, 없으면 기본 건수
+                # 이미 데이터가 있으면 이번 Insert 작업에서는 통과(Skip)
                 if last_date is not None:
-                    # 최근 30일만 추가 수집 (겹치는 부분은 INSERT OR IGNORE로 무시)
-                    df = self.client.fetch_daily_ohlcv(ticker, count=30)
-                else:
-                    df = self.client.fetch_daily_ohlcv(ticker, count=Settings.DEFAULT_DAILY_COUNT)
+                    skipped_count += 1
+                    continue
+
+                df = self.client.fetch_daily_ohlcv(ticker, count=Settings.DEFAULT_DAILY_COUNT)
 
                 if not df.empty:
                     self.db.upsert_stock_daily(ticker, df)
                     success_count += 1
 
             except Exception as e:
-                logger.error(f"Failed incremental daily for {ticker}: {e}")
+                logger.error(f"Failed daily insert for {ticker}: {e}")
                 continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
-        logger.info(f"Incremental daily collection: {success_count}/{len(tickers)} succeeded")
+        logger.info(f"Daily Insert collection: {success_count} succeeded, {skipped_count} skipped")
+        return success_count
+
+    def collect_daily_update(self, tickers: List[str]) -> int:
+        """
+        증분 통용 수집: DB에 마지막 수집일이 있는 종목만 30일치 최신 데이터를 추가 수집.
+
+        Parameters:
+            tickers: 종목코드 리스트
+        Returns:
+            수집 성공한 종목 수
+        """
+        success_count = 0
+        skipped_count = 0
+
+        for ticker in tickers:
+            try:
+                last_date = self.db.get_last_date("stock_daily", "ticker", ticker)
+                # 데이터가 없는 신규 종목이면 이번 Update 작업에서는 통과(Skip)
+                if last_date is None:
+                    skipped_count += 1
+                    continue
+
+                # 최근 30일만 추가 수집 (겹치는 부분은 INSERT OR IGNORE로 무시됨)
+                df = self.client.fetch_daily_ohlcv(ticker, count=30)
+
+                if not df.empty:
+                    self.db.upsert_stock_daily(ticker, df)
+                    success_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed daily update for {ticker}: {e}")
+                continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
+
+        logger.info(f"Daily Update collection: {success_count} succeeded, {skipped_count} skipped")
         return success_count
 
     def collect_minute(self, tickers: List[str],
@@ -112,6 +153,8 @@ class StockCollector:
             except Exception as e:
                 logger.error(f"Failed to collect minute for {ticker}: {e}")
                 continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Minute collection complete: {success_count}/{len(tickers)} succeeded")
         return success_count

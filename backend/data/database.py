@@ -224,6 +224,11 @@ class DatabaseManager:
     # 읽기 (기간 필터링 + DataFrame 반환)
     # ══════════════════════════════════════════
 
+    def query_dataframe(self, query: str) -> pd.DataFrame:
+        """임의의 SELECT 쿼리를 실행하여 DataFrame 반환."""
+        with self._connection() as conn:
+            return pd.read_sql_query(query, conn)
+
     def load_stock_daily(self, ticker: str,
                          start_date: int = None,
                          end_date: int = None) -> pd.DataFrame:

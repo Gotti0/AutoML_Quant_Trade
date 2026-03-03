@@ -14,7 +14,7 @@ class Settings:
     MODEL_DIR = os.path.join(DATA_DIR, "models")
 
     # ── 32비트 브릿지 서버 ──
-    BRIDGE_URL = "http://127.0.0.1:8000"
+    BRIDGE_URL = "http://127.0.0.1:8001"
 
     # ── 거시지표 해외 코드 (CpSvrNew8300) ──
     MACRO_CODES = {
@@ -42,6 +42,7 @@ class Settings:
     }
 
     # ── 백테스팅 파라미터 ──
+    INITIAL_CAPITAL = 100_000_000   # 초기 자본금 1억원
     COMMISSION_RATE = 0.00015       # 매매 수수료 0.015%
     TAX_RATE = 0.0018               # 매도 거래세 0.18%
     MARKET_IMPACT_GAMMA = 0.1       # 시장 충격 계수 (제곱근 모델)
@@ -60,7 +61,7 @@ class Settings:
     }
 
     # ── 데이터 수집 ──
-    CYBOS_THROTTLE_WAIT = 0.25      # API 호출 간격 (초) — 15초당 60건 제한 대응
+    CYBOS_THROTTLE_WAIT = 1.00      # API 호출 간격 (초) — 15초당 60건 제한 대응
     DEFAULT_DAILY_COUNT = 500       # 기본 일봉 수집 건수
     DEFAULT_MINUTE_COUNT = 5000     # 기본 분봉 수집 건수
 

@@ -5,7 +5,8 @@ CLI 인터페이스를 통해 데이터 수집, 국면 감지, 백테스팅 등
 전체 파이프라인을 순차적으로 실행.
 
 Usage:
-    python -m backend.main --collect           # 전체 데이터 수집
+    python -m backend.main --collect-insert    # DB에 없는 종목 전체 데이터 수집 (최초)
+    python -m backend.main --collect-update    # DB에 있는 종목 최근 데이터 수집 (업데이트)
     python -m backend.main --collect-macro     # 거시지표만 수집
     python -m backend.main --collect-overseas   # 해외 자산만 수집
     python -m backend.main --train-regime      # 국면 모델 학습 (Phase 2)
@@ -34,10 +35,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def run_collect_all(db: DatabaseManager, client: BridgeClient):
-    """전체 데이터 수집: 국내 주식 + 해외 자산 + 거시지표"""
+def run_collect_insert(db: DatabaseManager, client: BridgeClient):
+    """신규 종목 데이터 수집 (Insert): 국내 주식 + 해외 자산 + 거시지표"""
     logger.info("=" * 60)
-    logger.info("Starting full data collection pipeline")
+    logger.info("Starting data collection pipeline (INSERT)")
     logger.info("=" * 60)
 
     # 1. 국내 주식 유니버스 수집
@@ -49,28 +50,72 @@ def run_collect_all(db: DatabaseManager, client: BridgeClient):
         logger.error(f"  → Failed to fetch universe: {e}")
         universe = []
 
-    # 2. 국내 주식 일봉 수집
+    # 2. 국내 주식 일봉 수집 (신규)
     if universe:
-        logger.info("[2/4] Collecting domestic daily OHLCV...")
+        logger.info("[2/4] Collecting domestic daily OHLCV (Insert)...")
         collector = StockCollector(db=db, client=client)
-        collector.collect_daily_incremental(universe)
+        collector.collect_daily_insert(universe)
 
-    # 3. 해외 자산 일봉 수집
-    logger.info("[3/4] Collecting overseas assets...")
+    # 3. 해외 자산 일봉 수집 (신규)
+    logger.info("[3/4] Collecting overseas assets (Insert)...")
     mapper = AssetUniverseMapper()
     overseas_codes = mapper.get_codes_by_source("overseas")
     if overseas_codes:
         overseas_collector = OverseasCollector(db=db, client=client)
-        overseas_collector.collect_batch(overseas_codes)
+        overseas_collector.collect_insert(overseas_codes)
 
-    # 4. 거시지표 수집
-    logger.info("[4/4] Collecting macro indicators...")
+    # 4. 거시지표 수집 (신규)
+    logger.info("[4/4] Collecting macro indicators (Insert)...")
     macro_collector = MacroCollector(db=db, client=client)
-    macro_collector.collect_all()
+    macro_collector.collect_insert()
 
     # 요약
     logger.info("=" * 60)
-    logger.info("Collection complete. Database summary:")
+    logger.info("Insert Collection complete. Database summary:")
+    logger.info(f"  stock_daily:    {db.get_row_count('stock_daily'):>10,} rows")
+    logger.info(f"  stock_minute:   {db.get_row_count('stock_minute'):>10,} rows")
+    logger.info(f"  overseas_daily: {db.get_row_count('overseas_daily'):>10,} rows")
+    logger.info(f"  macro_daily:    {db.get_row_count('macro_daily'):>10,} rows")
+    logger.info("=" * 60)
+
+
+def run_collect_update(db: DatabaseManager, client: BridgeClient):
+    """기존 종목 데이터 업데이트 (Update): 국내 주식 + 해외 자산 + 거시지표"""
+    logger.info("=" * 60)
+    logger.info("Starting data collection pipeline (UPDATE)")
+    logger.info("=" * 60)
+
+    # 1. 국내 주식 유니버스 수집
+    logger.info("[1/4] Fetching domestic equity universe...")
+    try:
+        universe = client.fetch_universe()
+        logger.info(f"  → {len(universe)} domestic tickers found")
+    except Exception as e:
+        logger.error(f"  → Failed to fetch universe: {e}")
+        universe = []
+
+    # 2. 국내 주식 일봉 수집 (지원)
+    if universe:
+        logger.info("[2/4] Collecting domestic daily OHLCV (Update)...")
+        collector = StockCollector(db=db, client=client)
+        collector.collect_daily_update(universe)
+
+    # 3. 해외 자산 일봉 수집 (업데이트)
+    logger.info("[3/4] Collecting overseas assets (Update)...")
+    mapper = AssetUniverseMapper()
+    overseas_codes = mapper.get_codes_by_source("overseas")
+    if overseas_codes:
+        overseas_collector = OverseasCollector(db=db, client=client)
+        overseas_collector.collect_update(overseas_codes)
+
+    # 4. 거시지표 수집 (업데이트)
+    logger.info("[4/4] Collecting macro indicators (Update)...")
+    macro_collector = MacroCollector(db=db, client=client)
+    macro_collector.collect_update()
+
+    # 요약
+    logger.info("=" * 60)
+    logger.info("Update Collection complete. Database summary:")
     logger.info(f"  stock_daily:    {db.get_row_count('stock_daily'):>10,} rows")
     logger.info(f"  stock_minute:   {db.get_row_count('stock_minute'):>10,} rows")
     logger.info(f"  overseas_daily: {db.get_row_count('overseas_daily'):>10,} rows")
@@ -97,7 +142,8 @@ def run_collect_overseas(db: DatabaseManager, client: BridgeClient):
 
 def main():
     parser = argparse.ArgumentParser(description="AutoML Quant Trade Pipeline")
-    parser.add_argument("--collect", action="store_true", help="Run full data collection")
+    parser.add_argument("--collect-insert", action="store_true", help="Run data collection for new tickers only (Insert)")
+    parser.add_argument("--collect-update", action="store_true", help="Run data collection for existing tickers only (Update)")
     parser.add_argument("--collect-macro", action="store_true", help="Collect macro indicators only")
     parser.add_argument("--collect-overseas", action="store_true", help="Collect overseas assets only")
     parser.add_argument("--train-regime", action="store_true", help="Train regime detection model (Phase 2)")
@@ -122,11 +168,13 @@ def main():
         return
 
     # 브릿지 필요한 작업들
-    if args.collect or args.collect_macro or args.collect_overseas:
+    if args.collect_insert or args.collect_update or args.collect_macro or args.collect_overseas:
         client = BridgeClient()
         try:
-            if args.collect:
-                run_collect_all(db, client)
+            if args.collect_insert:
+                run_collect_insert(db, client)
+            if args.collect_update:
+                run_collect_update(db, client)
             elif args.collect_macro:
                 run_collect_macro(db, client)
             elif args.collect_overseas:
@@ -213,6 +261,73 @@ def main():
 
         equity_curve = loop.run(market_data)
         logger.info(f"Equity curve: {len(equity_curve)} data points")
+
+        # --- [NEW] 백테스트 결과 직렬화 로직 ---
+        import json
+        import numpy as np
+        from pathlib import Path
+        
+        cache_dir = Path("cache_daishin")
+        cache_dir.mkdir(exist_ok=True)
+        
+        algorithms = []
+        for idx, (name, acc) in enumerate(ledger.sub_accounts.items(), 1):
+            metrics = acc.get_performance_metrics()
+            curve_df = acc.get_equity_curve()
+            
+            eq_data = []
+            if not curve_df.empty:
+                for _, row in curve_df.iterrows():
+                    ts = str(int(row['timestamp']))
+                    date_str = f"{ts[:4]}-{ts[4:6]}-{ts[6:]}" if len(ts) == 8 else ts
+                    eq_data.append({"date": date_str, "equity": float(row['equity'])})
+            
+            algorithms.append({
+                "id": str(idx),
+                "name": name,
+                "timeframe": "Daily",
+                "rank": idx,
+                "metrics": {
+                    "cumulativeReturn": float(metrics.get("total_return", 0) * 100),
+                    "maxDrawdown": float(metrics.get("max_drawdown", 0) * 100),
+                    "sharpeRatio": float(metrics.get("sharpe_ratio", 0)),
+                    "winRate": float(metrics.get("win_rate", 0) * 100)
+                },
+                "equityCurve": eq_data[-100:] if len(eq_data) > 100 else eq_data
+            })
+            
+        master_metrics = ledger.get_performance_metrics()
+        probs = loop.last_regime_probs if loop.last_regime_probs is not None else [0.33, 0.33, 0.34]
+        regime_labels = ["Bull", "Bear", "Crash"]
+        dominant_idx = int(np.argmax(probs))
+        
+        last_date = "1970-01-01"
+        if not equity_curve.empty:
+            ts = str(int(equity_curve.iloc[-1]["timestamp"]))
+            last_date = f"{ts[:4]}-{ts[4:6]}-{ts[6:]}" if len(ts) == 8 else ts
+            
+        dashboard_data = {
+            "currentRegime": {
+                "timestamp": last_date,
+                "probabilities": {
+                    "Bull": float(probs[0]),
+                    "Bear": float(probs[1]),
+                    "Crash": float(probs[2])
+                },
+                "dominantRegime": regime_labels[dominant_idx]
+            },
+            "masterMetrics": {
+                "initialCapital": float(master_metrics.get("initial_capital", 0)),
+                "totalReturn": float(master_metrics.get("total_return", 0) * 100),
+            },
+            "algorithms": algorithms
+        }
+        
+        out_path = cache_dir / "latest_backtest.json"
+        with open(out_path, "w", encoding="utf-8") as f:
+            json.dump(dashboard_data, f, ensure_ascii=False, indent=2)
+            
+        logger.info(f"Dashboard data saved to {out_path}")
         return
 
     if args.server:

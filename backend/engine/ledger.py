@@ -117,6 +117,51 @@ class SubEngineAccount:
             return pd.DataFrame(columns=["timestamp", "ticker", "qty", "price", "fee"])
         return pd.DataFrame(self.trade_log)
 
+    def get_performance_metrics(self) -> Dict:
+        """서브 계정에 대한 핵심 성과 지표 계산."""
+        curve = self.get_equity_curve()
+        if curve.empty:
+            return {}
+
+        equity = curve["equity"]
+        returns = equity.pct_change().dropna()
+
+        # 총 수익률
+        total_return = (equity.iloc[-1] / equity.iloc[0]) - 1 if equity.iloc[0] != 0 else 0
+
+        # 연간 수익률 (일봉 기준 252일 가정)
+        n_days = len(equity)
+        annual_return = (1 + total_return) ** (252 / max(n_days, 1)) - 1
+
+        # 변동성 (연율화)
+        annual_vol = returns.std() * (252 ** 0.5) if len(returns) > 1 else 0
+
+        # 샤프 비율 (무위험 이자율 3% 가정)
+        risk_free = 0.03
+        sharpe = (annual_return - risk_free) / annual_vol if annual_vol > 0 else 0
+
+        # MDD
+        cummax = equity.cummax()
+        drawdowns = (equity - cummax) / cummax
+        mdd = drawdowns.min() if not pd.isna(drawdowns.min()) else 0.0
+
+        calmar = annual_return / abs(mdd) if mdd != 0 else 0
+
+        # 단순 승률 추정 
+        win_rate = 0.5 # Phase 4에서 상세 구현
+
+        return {
+            "total_return": float(total_return),
+            "annual_return": float(annual_return),
+            "annual_volatility": float(annual_vol),
+            "sharpe_ratio": float(sharpe),
+            "max_drawdown": float(mdd),
+            "calmar_ratio": float(calmar),
+            "total_trades": len(self.trade_log),
+            "win_rate": win_rate,
+            "final_equity": float(equity.iloc[-1]),
+        }
+
     @property
     def total_positions(self) -> int:
         """보유 종목 수."""

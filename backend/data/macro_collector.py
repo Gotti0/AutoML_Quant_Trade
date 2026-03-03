@@ -5,6 +5,7 @@ OverseasCollector를 활용하여 해외 지수·환율·원자재의 과거 일
 수집하고, 단일 거시지표 시계열로 통합.
 """
 import logging
+import time
 from typing import Dict
 
 import pandas as pd
@@ -55,7 +56,40 @@ class MacroCollector:
         logger.info(f"Macro collection complete: {success_count}/{len(self.MACRO_CODES)} succeeded")
         return success_count
 
-    def collect_incremental(self) -> int:
+    def collect_insert(self) -> int:
+        """
+        신규 수집: 마지막 수집일이 없는 지표만 전체 수집.
+
+        Returns:
+            수집 성공한 지표 수
+        """
+        success_count = 0
+        skipped_count = 0
+
+        for indicator, code in self.MACRO_CODES.items():
+            try:
+                last_date = self.db.get_last_date("macro_daily", "indicator", indicator)
+
+                if last_date is not None:
+                    skipped_count += 1
+                    continue
+
+                df = self.client.fetch_overseas_chart(code, count=Settings.DEFAULT_DAILY_COUNT)
+
+                if not df.empty:
+                    self.db.upsert_macro_daily(indicator, code, df)
+                    success_count += 1
+
+            except Exception as e:
+                logger.error(f"Failed macro insert for {indicator}: {e}")
+                continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
+
+        logger.info(f"Macro Insert: {success_count} succeeded, {skipped_count} skipped")
+        return success_count
+
+    def collect_update(self) -> int:
         """
         증분 수집: 마지막 수집일 이후 데이터만 추가.
 
@@ -63,25 +97,29 @@ class MacroCollector:
             수집 성공한 지표 수
         """
         success_count = 0
+        skipped_count = 0
 
         for indicator, code in self.MACRO_CODES.items():
             try:
                 last_date = self.db.get_last_date("macro_daily", "indicator", indicator)
 
-                if last_date is not None:
-                    df = self.client.fetch_overseas_chart(code, count=30)
-                else:
-                    df = self.client.fetch_overseas_chart(code, count=Settings.DEFAULT_DAILY_COUNT)
+                if last_date is None:
+                    skipped_count += 1
+                    continue
+
+                df = self.client.fetch_overseas_chart(code, count=30)
 
                 if not df.empty:
                     self.db.upsert_macro_daily(indicator, code, df)
                     success_count += 1
 
             except Exception as e:
-                logger.error(f"Failed incremental macro for {indicator}: {e}")
+                logger.error(f"Failed macro update for {indicator}: {e}")
                 continue
+            finally:
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
-        logger.info(f"Macro incremental: {success_count}/{len(self.MACRO_CODES)} succeeded")
+        logger.info(f"Macro Update: {success_count} succeeded, {skipped_count} skipped")
         return success_count
 
     def load_history(self, start_date: int = None,

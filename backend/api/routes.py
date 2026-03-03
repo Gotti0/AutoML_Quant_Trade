@@ -1,4 +1,6 @@
 import logging
+import json
+from pathlib import Path
 from typing import Dict, Any
 from fastapi import APIRouter, HTTPException
 
@@ -18,20 +20,23 @@ def get_dashboard_summary():
     2. Sub-engine performances (Metrics + Equity Curves)
     """
     try:
-        # In a real scenario, this would poll the `MasterLedger` or a specific DB table 
-        # where backtest results are stored. For this phase, we'll try to retrieve 
-        # actual data if it exists, or provide structured fallbacks.
+        # 최근 백테스트에서 직렬화된 JSON 파일 읽어오기
+        cache_path = Path("cache_daishin") / "latest_backtest.json"
         
-        # This implementation will be expanded as the actual backtest results persistence is finalized.
-        # Instead of an HTTPException, we return placeholder structure so the UI renders.
-        return {
-            "currentRegime": {
-                "timestamp": "1970-01-01",
-                "probabilities": { "Bull": 0.33, "Bear": 0.33, "Crash": 0.34 },
-                "dominantRegime": "Crash"
-            },
-            "algorithms": []
-        }
+        if cache_path.exists():
+            with open(cache_path, "r", encoding="utf-8") as f:
+                dashboard_data = json.load(f)
+            return dashboard_data
+        else:
+            # 파일이 없을 경우 기존의 Dummy Data 리턴
+            return {
+                "currentRegime": {
+                    "timestamp": "1970-01-01",
+                    "probabilities": { "Bull": 0.33, "Bear": 0.33, "Crash": 0.34 },
+                    "dominantRegime": "Crash"
+                },
+                "algorithms": []
+            }
         
     except Exception as e:
         logger.error(f"Failed to fetch dashboard data: {e}")
