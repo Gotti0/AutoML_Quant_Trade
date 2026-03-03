@@ -5,6 +5,7 @@ from typing import List
 import logging
 import sys
 import os
+from contextlib import asynccontextmanager
 
 # 32비트 환경에서 로컬 모듈 임포트
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -13,19 +14,20 @@ from daishin_agent import DaishinAgent
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Daishin 32-bit Bridge Server")
-
 # Initialize agent globally for single instance use
 agent = DaishinAgent()
 
-
-@app.on_event("startup")
-async def startup_event():
-    """Called when the FastAPI application starts up."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Called when the FastAPI application starts up and shuts down."""
     logger.info("Starting up Daishin API Bridge Server...")
     success = agent.wait_for_login(timeout=600)
     if not success:
         logger.error("Failed to connect to Daishin HTS on startup.")
+    yield
+    logger.info("Shutting down Daishin API Bridge Server...")
+
+app = FastAPI(title="Daishin 32-bit Bridge Server", lifespan=lifespan)
 
 
 # ══════════════════════════════════════════
@@ -169,5 +171,5 @@ def _format_code(stk_cd: str) -> str:
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting uvicorn server on port 8000...")
-    uvicorn.run("bridge_server:app", host="0.0.0.0", port=8000, workers=1, log_level="info")
+    logger.info("Starting uvicorn server on port 8001...")
+    uvicorn.run("bridge_server:app", host="0.0.0.0", port=8001, workers=1, log_level="info")

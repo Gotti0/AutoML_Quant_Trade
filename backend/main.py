@@ -10,6 +10,7 @@ Usage:
     python -m backend.main --collect-overseas   # 해외 자산만 수집
     python -m backend.main --train-regime      # 국면 모델 학습 (Phase 2)
     python -m backend.main --backtest          # 백테스팅 실행 (Phase 3)
+    python -m backend.main --server            # 대시보드 백엔드 구동 (FastAPI)
 """
 import argparse
 import logging
@@ -101,6 +102,7 @@ def main():
     parser.add_argument("--collect-overseas", action="store_true", help="Collect overseas assets only")
     parser.add_argument("--train-regime", action="store_true", help="Train regime detection model (Phase 2)")
     parser.add_argument("--backtest", action="store_true", help="Run backtesting engine (Phase 3)")
+    parser.add_argument("--server", action="store_true", help="Start FastAPI Backend Server for Dashboard")
     parser.add_argument("--db-info", action="store_true", help="Show database statistics")
 
     args = parser.parse_args()
@@ -211,6 +213,12 @@ def main():
 
         equity_curve = loop.run(market_data)
         logger.info(f"Equity curve: {len(equity_curve)} data points")
+        return
+
+    if args.server:
+        logger.info("Starting Dashboard Backend Server (FastAPI)")
+        import uvicorn
+        uvicorn.run("backend.api.main:app", host="127.0.0.1", port=8000, reload=True)
         return
 
     parser.print_help()
