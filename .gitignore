@@ -1,0 +1,11 @@
+docs/
+.env
+__pycache__/
+venv/
+cache/
+logs/
+*.bat
+vpanda/
+cache_kiwoom/
+cache_nasdaq/
+tests/
