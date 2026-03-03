@@ -134,11 +134,83 @@ def main():
         return
 
     if args.train_regime:
-        logger.info("Phase 2: Regime detection training — not yet implemented")
+        logger.info("Phase 2: Regime detection training")
+        from backend.models.feature_engineer import FeatureEngineer
+        from backend.models.regime_hmm import RegimeHMM
+        from backend.data.macro_collector import MacroCollector
+
+        # 국내 대표 종목 또는 거시 지표 기반 피처 추출
+        fe = FeatureEngineer()
+        price_df = db.query_dataframe(
+            "SELECT date, open, high, low, close, volume FROM stock_daily "
+            "ORDER BY date"
+        )
+        if price_df.empty:
+            logger.error("No stock_daily data found. Run --collect first.")
+            return
+
+        features = fe.extract(price_df)
+        if features.empty:
+            logger.error("Feature extraction produced empty results.")
+            return
+
+        hmm = RegimeHMM()
+        hmm.fit(features)
+        hmm.save()
+        logger.info(f"Regime model saved. Transition matrix:\n{hmm.get_transition_matrix()}")
         return
 
     if args.backtest:
-        logger.info("Phase 3: Backtesting engine — not yet implemented")
+        logger.info("Phase 3+4: Backtesting with Meta Portfolio Engine")
+        from backend.engine.ledger import MasterLedger
+        from backend.engine.transaction_model import TransactionModel
+        from backend.meta.meta_portfolio_loop import MetaPortfolioLoop
+        from backend.models.regime_hmm import RegimeHMM
+
+        # 원장 세팅
+        ledger = MasterLedger(initial_capital=Settings.INITIAL_CAPITAL)
+        ledger.create_sub_account("MidFreq", 0.15)
+        ledger.create_sub_account("Swing", 0.35)
+        ledger.create_sub_account("MidShort", 0.35)
+        ledger.create_sub_account("Long_Safe", 0.15)
+
+        # HMM 모델 로드 (학습 완료된 경우)
+        regime_model = None
+        try:
+            regime_model = RegimeHMM()
+            regime_model.load()
+            logger.info("Regime model loaded successfully.")
+        except Exception as e:
+            logger.warning(f"Regime model not found, using uniform fallback: {e}")
+            regime_model = None
+
+        # 메타 포트폴리오 루프
+        loop = MetaPortfolioLoop(
+            ledger=ledger,
+            transaction_model=TransactionModel(),
+            regime_model=regime_model,
+        )
+
+        # 시장 데이터 로드
+        tickers = db.query_dataframe(
+            "SELECT DISTINCT ticker FROM stock_daily"
+        )["ticker"].tolist()
+
+        market_data = {}
+        for ticker in tickers[:10]:  # 상위 10 종목으로 제한 (성능)
+            df = db.query_dataframe(
+                f"SELECT date, open, high, low, close, volume "
+                f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
+            )
+            if not df.empty:
+                market_data[ticker] = df
+
+        if not market_data:
+            logger.error("No market data available. Run --collect first.")
+            return
+
+        equity_curve = loop.run(market_data)
+        logger.info(f"Equity curve: {len(equity_curve)} data points")
         return
 
     parser.print_help()
