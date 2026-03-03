@@ -75,6 +75,7 @@ class MacroCollector:
                     continue
 
                 df = self.client.fetch_overseas_chart(code, count=Settings.DEFAULT_DAILY_COUNT)
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:
                     self.db.upsert_macro_daily(indicator, code, df)
@@ -83,8 +84,6 @@ class MacroCollector:
             except Exception as e:
                 logger.error(f"Failed macro insert for {indicator}: {e}")
                 continue
-            finally:
-                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Macro Insert: {success_count} succeeded, {skipped_count} skipped")
         return success_count
@@ -108,6 +107,7 @@ class MacroCollector:
                     continue
 
                 df = self.client.fetch_overseas_chart(code, count=30)
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:
                     self.db.upsert_macro_daily(indicator, code, df)
@@ -116,8 +116,6 @@ class MacroCollector:
             except Exception as e:
                 logger.error(f"Failed macro update for {indicator}: {e}")
                 continue
-            finally:
-                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Macro Update: {success_count} succeeded, {skipped_count} skipped")
         return success_count

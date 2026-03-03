@@ -76,6 +76,7 @@ class StockCollector:
                     continue
 
                 df = self.client.fetch_daily_ohlcv(ticker, count=Settings.DEFAULT_DAILY_COUNT)
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:
                     self.db.upsert_stock_daily(ticker, df)
@@ -84,8 +85,6 @@ class StockCollector:
             except Exception as e:
                 logger.error(f"Failed daily insert for {ticker}: {e}")
                 continue
-            finally:
-                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Daily Insert collection: {success_count} succeeded, {skipped_count} skipped")
         return success_count
@@ -110,8 +109,8 @@ class StockCollector:
                     skipped_count += 1
                     continue
 
-                # 최근 30일만 추가 수집 (겹치는 부분은 INSERT OR IGNORE로 무시됨)
                 df = self.client.fetch_daily_ohlcv(ticker, count=30)
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:
                     self.db.upsert_stock_daily(ticker, df)
@@ -120,8 +119,6 @@ class StockCollector:
             except Exception as e:
                 logger.error(f"Failed daily update for {ticker}: {e}")
                 continue
-            finally:
-                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Daily Update collection: {success_count} succeeded, {skipped_count} skipped")
         return success_count

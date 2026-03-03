@@ -93,6 +93,7 @@ class OverseasCollector:
                     continue
 
                 df = self.client.fetch_overseas_chart(code, count=Settings.DEFAULT_DAILY_COUNT)
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:
                     self.db.upsert_overseas_daily(code, df)
@@ -101,8 +102,6 @@ class OverseasCollector:
             except Exception as e:
                 logger.error(f"Failed overseas insert for {code}: {e}")
                 continue
-            finally:
-                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Overseas Insert: {success_count} succeeded, {skipped_count} skipped")
         return success_count
@@ -127,6 +126,7 @@ class OverseasCollector:
                     continue
 
                 df = self.client.fetch_overseas_chart(code, count=30)
+                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:
                     self.db.upsert_overseas_daily(code, df)
@@ -135,8 +135,6 @@ class OverseasCollector:
             except Exception as e:
                 logger.error(f"Failed overseas update for {code}: {e}")
                 continue
-            finally:
-                time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
         logger.info(f"Overseas Update: {success_count} succeeded, {skipped_count} skipped")
         return success_count
