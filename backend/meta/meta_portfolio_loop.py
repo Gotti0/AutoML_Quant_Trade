@@ -72,42 +72,41 @@ class MetaPortfolioLoop(BacktestEventLoop):
         )
 
         event_count = 0
+        current_timestamp = None
 
         while not pq.empty():
-            _, _, event = pq.get()
+            ts, _, event = pq.get()
             event_count += 1
 
-            # 현재 가격 갱신
+            if current_timestamp is None:
+                current_timestamp = ts
+
+            # ─── 날짜(Timestamp)가 바뀌었을 때 (일일 마감 처리) ───
+            if ts != current_timestamp:
+                self._end_of_bar_processing(current_timestamp)
+                current_timestamp = ts
+
+            # ─── 단일 종목 이벤트 처리 (장중/장마감 틱) ───
+            # 서킷 브레이커가 발동되지 않은 평상시에만 개별 종목 매매 진행
+            if not self.grm.is_circuit_broken:
+                self._process_pending_signals(event)
+
+            # 현재 가격 갱신 (항상 최신화)
             self.current_prices[event.ticker] = event.close
 
-            # ─── 글로벌 리스크 체크 ───
-            risk_status = self.grm.check_portfolio_risk(
-                self.ledger, self.current_prices
-            )
-            if risk_status["status"] == "circuit_broken":
-                # 서킷 브레이커 발동 → 시그널 전달 차단
-                self.ledger.record_equity(event.timestamp, self.current_prices)
-                continue
+            if not self.grm.is_circuit_broken:
+                for engine_name, strategy_list in self.strategies.items():
+                    for strategy in strategy_list:
+                        signal = strategy.on_market_data(event)
+                        if signal is not None:
+                            self._pending_signals.append((engine_name, signal))
 
-            # ─── 대기 시그널 체결 (이전 봉 시그널 → 현재 봉 시가) ───
-            self._process_pending_signals(event)
-
-            # ─── 전략에 MarketEvent 전달 ───
-            # 서킷 브레이커가 걸려있지 않은 상태에서만 시그널 수집
-            for engine_name, strategy_list in self.strategies.items():
-                for strategy in strategy_list:
-                    signal = strategy.on_market_data(event)
-                    if signal is not None:
-                        self._pending_signals.append((engine_name, signal))
-
-            # ─── 메타 레이어: HMM 국면 추론 + 리밸런싱 ───
-            self._meta_step(event)
-
-            # 에퀴티 스냅샷
-            self.ledger.record_equity(event.timestamp, self.current_prices)
-
-            if event_count % 10000 == 0:
+            if event_count % 500000 == 0:
                 logger.info(f"  Progress: {event_count}/{total_events}")
+
+        # 마지막 데이터 마감 처리
+        if current_timestamp is not None:
+            self._end_of_bar_processing(current_timestamp)
 
         # 결과
         metrics = self.ledger.get_performance_metrics()
@@ -124,26 +123,43 @@ class MetaPortfolioLoop(BacktestEventLoop):
 
         return self.ledger.get_equity_curve()
 
-    def _meta_step(self, event):
+    def _end_of_bar_processing(self, timestamp: int):
+        """
+        특정 날짜의 모든 틱 처리가 끝난 뒤(종가 기준) 포트폴리오 메타 레이어 가동.
+        하루에 단 1번만 실행되어 과도한 스냅샷 및 연산 병목 방지.
+        """
+        # 1. 글로벌 리스크 체크
+        risk_status = self.grm.check_portfolio_risk(
+            self.ledger, self.current_prices
+        )
+        
+        # 2. 서킷 브레이커가 아닐 때만 국면 추론 및 리밸런싱 판단
+        if risk_status["status"] != "circuit_broken":
+            self._meta_step(timestamp)
+
+        # 3. 일 마감 에퀴티 스냅샷 (단 1회)
+        self.ledger.record_equity(timestamp, self.current_prices)
+
+    def _meta_step(self, timestamp: int):
         """
         메타 레이어 처리: 사전 계산된 HMM 국면 조회 → 리밸런싱 판단 → 실행.
         """
         # HMM 국면 모델 O(1) 메모리 참조
         n = self.allocator.n_regimes
         default_probs = np.ones(n) / n
-        regime_probs = self.precomputed_regimes.get(event.timestamp, default_probs)
+        regime_probs = self.precomputed_regimes.get(timestamp, default_probs)
 
         self._last_regime_probs = regime_probs
 
         # 국면 기반 긴급 대피 체크
-        regime_risk = self.grm.check_regime_risk(regime_probs)
+        self.grm.check_regime_risk(regime_probs)
 
         # 리밸런싱 시점 판단
-        if self.scheduler.should_rebalance(event.timestamp, regime_probs):
+        if self.scheduler.should_rebalance(timestamp, regime_probs):
             self.scheduler.execute_rebalance(
                 ledger=self.ledger,
                 regime_probs=regime_probs,
-                current_date=event.timestamp,
+                current_date=timestamp,
                 market_prices=self.current_prices,
             )
         else:

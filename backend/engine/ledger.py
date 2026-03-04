@@ -163,7 +163,12 @@ class SubEngineAccount:
 
         # 연간 수익률 (일봉 기준 252일 가정)
         n_days = len(equity)
-        annual_return = (1 + total_return) ** (252 / max(n_days, 1)) - 1
+        try:
+            # total_return이 -1 이하가 되면 (1 + total_return)이 음수가 되어
+            # 거듭제곱 시 복소수(NaN) 발생 위험이 있으므로 하한(0.0)을 적용.
+            annual_return = (max(1 + total_return, 0.0)) ** (252 / max(n_days, 1)) - 1
+        except Exception:
+            annual_return = 0.0
 
         # 변동성 (연율화)
         annual_vol = returns.std() * (252 ** 0.5) if len(returns) > 1 else 0
@@ -312,10 +317,16 @@ class MasterLedger:
 
         # 연간 수익률 (일봉 기준 252일 가정)
         n_days = len(equity)
-        annual_return = (1 + total_return) ** (252 / max(n_days, 1)) - 1
+        try:
+            annual_return = (max(1 + total_return, 0.0)) ** (252 / max(n_days, 1)) - 1
+        except Exception:
+            annual_return = 0.0
 
         # 변동성 (연율화)
-        annual_vol = returns.std() * (252 ** 0.5) if len(returns) > 1 else 0
+        import warnings
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=RuntimeWarning)
+            annual_vol = returns.std() * (252 ** 0.5) if len(returns) > 1 else 0
 
         # 샤프 비율 (무위험 이자율 3% 가정)
         risk_free = 0.03

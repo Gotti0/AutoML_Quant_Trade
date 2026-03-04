@@ -409,10 +409,14 @@ def run_backtest(db: DatabaseManager):
         
         eq_data = []
         if not curve_df.empty:
-            for _, row in curve_df.iterrows():
-                ts = str(int(row['timestamp']))
-                date_str = f"{ts[:4]}-{ts[4:6]}-{ts[6:]}" if len(ts) == 8 else ts
-                eq_data.append({"date": date_str, "equity": float(row['equity'])})
+            # 병목 해소: iterrows() 대신 vectorization 사용 및 마지막 100개만 변환
+            tail_df = curve_df.tail(100)
+            timestamps = tail_df['timestamp'].astype(int).astype(str).values
+            equities = tail_df['equity'].astype(float).values
+            
+            for t_str, eq_val in zip(timestamps, equities):
+                date_str = f"{t_str[:4]}-{t_str[4:6]}-{t_str[6:]}" if len(t_str) == 8 else t_str
+                eq_data.append({"date": date_str, "equity": eq_val})
         
         algorithms.append({
             "id": str(idx),
@@ -425,7 +429,7 @@ def run_backtest(db: DatabaseManager):
                 "sharpeRatio": float(metrics.get("sharpe_ratio", 0)),
                 "winRate": float(metrics.get("win_rate", 0) * 100)
             },
-            "equityCurve": eq_data[-100:] if len(eq_data) > 100 else eq_data
+            "equityCurve": eq_data
         })
         
     master_metrics = ledger.get_performance_metrics()
