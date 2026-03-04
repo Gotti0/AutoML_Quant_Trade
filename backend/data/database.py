@@ -264,6 +264,21 @@ class DatabaseManager:
             df = pd.read_sql_query(query, conn, params=params)
         return df
 
+    def clear_system_logs(self, source: Optional[str] = None):
+        """
+        시스템 통합 로그 삭제.
+        source 파라미터가 없으면 전체 삭제, 있으면 해당 source만 삭제.
+        """
+        query = "DELETE FROM system_logs"
+        params = []
+        
+        if source:
+            query += " WHERE source = ?"
+            params.append(source)
+            
+        with self._connection() as conn:
+            conn.execute(query, params)
+
 
     # ══════════════════════════════════════════
     # 읽기 (기간 필터링 + DataFrame 반환)

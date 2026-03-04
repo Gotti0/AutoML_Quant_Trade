@@ -38,6 +38,20 @@ export const sendClientLog = async (level: string, message: string): Promise<voi
     }
 };
 
+export const clearSystemLogs = async (source?: string): Promise<{ status: string, message: string }> => {
+    try {
+        // source 인자가 있으면 특정 소스 로그만 삭제, 없으면 전부 삭제
+        const params = source ? { source } : undefined;
+        const response = await apiClient.delete('/pipeline/logs', { params });
+        return response.data;
+    } catch (error) {
+        let msg = 'Unknown error';
+        if (error instanceof Error) msg = error.message;
+        await sendClientLog('ERROR', `Failed to clear system logs: ${msg}`);
+        throw error;
+    }
+};
+
 export const fetchRegimeHistory = async (): Promise<RegimeProbability[]> => {
     const response = await apiClient.get('/regime/history');
     return response.data;

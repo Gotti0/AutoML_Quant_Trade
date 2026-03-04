@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { RefreshCw, AlertTriangle, AlertCircle, Info, Database } from 'lucide-react';
+import { RefreshCw, AlertTriangle, AlertCircle, Info, Database, Trash2 } from 'lucide-react';
+import { clearSystemLogs } from '../services/api';
 
 interface SystemLog {
     id: number;
@@ -13,6 +14,7 @@ interface SystemLog {
 export const SystemLogsPanel: React.FC = () => {
     const [logs, setLogs] = useState<SystemLog[]>([]);
     const [loading, setLoading] = useState<boolean>(true);
+    const [clearing, setClearing] = useState<boolean>(false);
     const [error, setError] = useState<string | null>(null);
 
     const fetchLogs = async () => {
@@ -27,6 +29,20 @@ export const SystemLogsPanel: React.FC = () => {
             setError(`Failed to fetch system logs: ${msg}`);
         } finally {
             setLoading(false);
+        }
+    };
+
+    const handleClearLogs = async () => {
+        if (!window.confirm("Are you sure you want to clear ALL system logs? This action cannot be undone.")) return;
+
+        setClearing(true);
+        try {
+            await clearSystemLogs();
+            await fetchLogs(); // 비운 뒤 즉시 목록 갱신
+        } catch (err: any) {
+            setError(err.message || 'Failed to clear system logs');
+        } finally {
+            setClearing(false);
         }
     };
 
@@ -62,14 +78,26 @@ export const SystemLogsPanel: React.FC = () => {
                     <Database className="w-5 h-5 text-indigo-400" />
                     <h2 className="text-lg font-semibold text-slate-100">System Logs (DB)</h2>
                 </div>
-                <button
-                    onClick={fetchLogs}
-                    disabled={loading}
-                    className="p-2 hover:bg-slate-700/50 rounded-lg transition-colors text-slate-400 hover:text-white disabled:opacity-50"
-                    title="Refresh logs"
-                >
-                    <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-                </button>
+                <div className="flex items-center gap-2">
+                    <button
+                        onClick={handleClearLogs}
+                        disabled={clearing || loading || logs.length === 0}
+                        className="flex items-center gap-1.5 px-3 py-1.5 hover:bg-rose-500/20 text-slate-400 hover:text-rose-400 rounded-lg transition-colors disabled:opacity-50 text-sm font-medium border border-transparent hover:border-rose-500/30"
+                        title="Clear all logs"
+                    >
+                        <Trash2 className={`w-4 h-4 ${clearing ? 'animate-bounce' : ''}`} />
+                        <span className="hidden sm:inline">Clear</span>
+                    </button>
+                    <div className="w-px h-6 bg-slate-700 mx-1"></div>
+                    <button
+                        onClick={fetchLogs}
+                        disabled={loading || clearing}
+                        className="p-2 hover:bg-slate-700/50 rounded-lg transition-colors text-slate-400 hover:text-white disabled:opacity-50"
+                        title="Refresh logs"
+                    >
+                        <RefreshCw className={`w-4 h-4 ${(loading && !clearing) ? 'animate-spin' : ''}`} />
+                    </button>
+                </div>
             </div>
 
             <div className="flex-1 overflow-y-auto p-4 bg-slate-900/50">

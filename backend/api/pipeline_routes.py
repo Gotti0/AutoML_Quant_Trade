@@ -57,6 +57,17 @@ def get_system_logs(limit: int = 200, source: str = None):
     return {"logs": logs_list}
 
 
+@router.delete("/logs")
+def delete_system_logs(source: str = None):
+    """
+    통합 시스템 로그 수동 삭제
+    - source 쿼리 파라미터가 있으면 해당 그룹만, 없으면 전체 삭제
+    """
+    db = DatabaseManager()
+    db.clear_system_logs(source=source)
+    return {"status": "ok", "message": f"{source or 'All'} logs cleared successfully"}
+
+
 @router.get("/commands")
 def list_commands():
     """사용 가능한 파이프라인 명령어 목록"""
