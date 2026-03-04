@@ -262,7 +262,7 @@ class DaishinAgent:
         self.overseas.SetInputValue(0, code)
         self.overseas.SetInputValue(1, ord("2"))   # 개수 기반
         self.overseas.SetInputValue(4, count)
-        self.overseas.SetInputValue(5, [0, 2, 3, 4, 5, 8])  # 날짜, OHLCV
+        self.overseas.SetInputValue(5, [0, 1, 2, 3, 4, 6])  # 날짜, OHLCV
         self.overseas.SetInputValue(6, ord("D"))
 
         result = []
@@ -332,3 +332,32 @@ class DaishinAgent:
             result.extend(list(codes))
         # 종목 코드에 'A' 접두사 확인
         return [f"A{c}" if not c.startswith("A") else c for c in result]
+
+    def get_overseas_universe(self, us_type: int = 1) -> List[str]:
+        """
+        해외 종목 코드 목록 조회 (CpUsCode.GetUsCodeList).
+
+        Parameters:
+            us_type: 카테고리 코드
+                0=금리 등 기타, 1=전체, 2=국가대표지수, 3=업종지수,
+                4=해외개별주식, 5=예탁증서(ADR), 6=원자재/반도체, 7=환율
+        Returns:
+            해당 카테고리의 해외 종목 코드 리스트
+        """
+        codes = self.us_code.GetUsCodeList(us_type)
+        return list(codes) if codes else []
+
+    def get_overseas_code_names(self, codes: List[str]) -> List[dict]:
+        """
+        해외 종목 코드의 한글명 매핑 조회 (CpUsCode.GetNameByUsCode).
+
+        Parameters:
+            codes: 해외 종목 코드 리스트
+        Returns:
+            [{"code": "AAPL", "name": "애플"}, ...]
+        """
+        result = []
+        for code in codes:
+            name = self.us_code.GetNameByUsCode(code)
+            result.append({"code": code, "name": name or ""})
+        return result

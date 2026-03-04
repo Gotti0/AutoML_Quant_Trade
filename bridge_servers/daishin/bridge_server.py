@@ -149,6 +149,24 @@ async def get_overseas_quote(code: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/overseas/universe")
+async def get_overseas_universe(us_type: int = 1):
+    """해외 종목 코드 목록 조회 (CpUsCode.GetUsCodeList).
+
+    us_type: 0=금리, 1=전체, 2=국가대표지수, 3=업종지수,
+             4=해외개별주식, 5=ADR, 6=원자재, 7=환율
+    """
+    _check_connection()
+    logger.info(f"Overseas universe request: us_type={us_type}")
+
+    try:
+        data = agent.get_overseas_universe(us_type)
+        return JSONResponse(content={"status": "success", "data": data})
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ══════════════════════════════════════════
 # 유틸리티
 # ══════════════════════════════════════════

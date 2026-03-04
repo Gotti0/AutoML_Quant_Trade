@@ -37,7 +37,7 @@ class AssetUniverseMapper:
         },
         "Gold": {
             "source": "overseas",
-            "codes": ["CM@GOLD"],
+            "codes": ["CM@NGLD"],
         },
         "Bond": {
             "source": "domestic",

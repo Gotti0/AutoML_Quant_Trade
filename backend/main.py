@@ -42,7 +42,7 @@ def run_collect_insert(db: DatabaseManager, client: BridgeClient):
     logger.info("=" * 60)
 
     # 1. 국내 주식 유니버스 수집
-    logger.info("[1/4] Fetching domestic equity universe...")
+    logger.info("[1/5] Fetching domestic equity universe...")
     try:
         universe = client.fetch_universe()
         logger.info(f"  → {len(universe)} domestic tickers found")
@@ -50,22 +50,42 @@ def run_collect_insert(db: DatabaseManager, client: BridgeClient):
         logger.error(f"  → Failed to fetch universe: {e}")
         universe = []
 
-    # 2. 국내 주식 일봉 수집 (신규)
+    # 2. 해외 유니버스 동적 수집 (CpUsCode)
+    logger.info("[2/5] Fetching overseas universe from CpUsCode...")
+    overseas_codes = []
+    try:
+        # 국가대표 지수 (UsType=2), 해외 개별주식 (4), 원자재 (6), 환율 (7)
+        for us_type, label in [(2, "국가대표지수"), (4, "해외개별주식"),
+                                (6, "원자재/반도체"), (7, "환율")]:
+            codes = client.fetch_overseas_universe(us_type)
+            logger.info(f"  → {label} (UsType={us_type}): {len(codes)}개")
+            overseas_codes.extend(codes)
+
+        # AssetUniverseMapper의 정적 코드도 병합 (중복 제거)
+        mapper = AssetUniverseMapper()
+        static_codes = mapper.get_codes_by_source("overseas")
+        overseas_codes = list(dict.fromkeys(overseas_codes + static_codes))  # 순서 유지 중복 제거
+        logger.info(f"  → 총 해외 유니버스: {len(overseas_codes)}개")
+    except Exception as e:
+        logger.error(f"  → Failed to fetch overseas universe: {e}")
+        mapper = AssetUniverseMapper()
+        overseas_codes = mapper.get_codes_by_source("overseas")
+        logger.info(f"  → Fallback to static codes: {len(overseas_codes)}개")
+
+    # 3. 국내 주식 일봉 수집 (신규)
     if universe:
-        logger.info("[2/4] Collecting domestic daily OHLCV (Insert)...")
+        logger.info("[3/5] Collecting domestic daily OHLCV (Insert)...")
         collector = StockCollector(db=db, client=client)
         collector.collect_daily_insert(universe)
 
-    # 3. 해외 자산 일봉 수집 (신규)
-    logger.info("[3/4] Collecting overseas assets (Insert)...")
-    mapper = AssetUniverseMapper()
-    overseas_codes = mapper.get_codes_by_source("overseas")
+    # 4. 해외 자산 일봉 수집 (신규)
     if overseas_codes:
+        logger.info("[4/5] Collecting overseas assets (Insert)...")
         overseas_collector = OverseasCollector(db=db, client=client)
         overseas_collector.collect_insert(overseas_codes)
 
-    # 4. 거시지표 수집 (신규)
-    logger.info("[4/4] Collecting macro indicators (Insert)...")
+    # 5. 거시지표 수집 (신규)
+    logger.info("[5/5] Collecting macro indicators (Insert)...")
     macro_collector = MacroCollector(db=db, client=client)
     macro_collector.collect_insert()
 
@@ -86,7 +106,7 @@ def run_collect_update(db: DatabaseManager, client: BridgeClient):
     logger.info("=" * 60)
 
     # 1. 국내 주식 유니버스 수집
-    logger.info("[1/4] Fetching domestic equity universe...")
+    logger.info("[1/5] Fetching domestic equity universe...")
     try:
         universe = client.fetch_universe()
         logger.info(f"  → {len(universe)} domestic tickers found")
@@ -94,22 +114,40 @@ def run_collect_update(db: DatabaseManager, client: BridgeClient):
         logger.error(f"  → Failed to fetch universe: {e}")
         universe = []
 
-    # 2. 국내 주식 일봉 수집 (지원)
+    # 2. 해외 유니버스 동적 수집 (CpUsCode)
+    logger.info("[2/5] Fetching overseas universe from CpUsCode...")
+    overseas_codes = []
+    try:
+        for us_type, label in [(2, "국가대표지수"), (4, "해외개별주식"),
+                                (6, "원자재/반도체"), (7, "환율")]:
+            codes = client.fetch_overseas_universe(us_type)
+            logger.info(f"  → {label} (UsType={us_type}): {len(codes)}개")
+            overseas_codes.extend(codes)
+
+        mapper = AssetUniverseMapper()
+        static_codes = mapper.get_codes_by_source("overseas")
+        overseas_codes = list(dict.fromkeys(overseas_codes + static_codes))
+        logger.info(f"  → 총 해외 유니버스: {len(overseas_codes)}개")
+    except Exception as e:
+        logger.error(f"  → Failed to fetch overseas universe: {e}")
+        mapper = AssetUniverseMapper()
+        overseas_codes = mapper.get_codes_by_source("overseas")
+        logger.info(f"  → Fallback to static codes: {len(overseas_codes)}개")
+
+    # 3. 국내 주식 일봉 수집 (업데이트)
     if universe:
-        logger.info("[2/4] Collecting domestic daily OHLCV (Update)...")
+        logger.info("[3/5] Collecting domestic daily OHLCV (Update)...")
         collector = StockCollector(db=db, client=client)
         collector.collect_daily_update(universe)
 
-    # 3. 해외 자산 일봉 수집 (업데이트)
-    logger.info("[3/4] Collecting overseas assets (Update)...")
-    mapper = AssetUniverseMapper()
-    overseas_codes = mapper.get_codes_by_source("overseas")
+    # 4. 해외 자산 일봉 수집 (업데이트)
     if overseas_codes:
+        logger.info("[4/5] Collecting overseas assets (Update)...")
         overseas_collector = OverseasCollector(db=db, client=client)
         overseas_collector.collect_update(overseas_codes)
 
-    # 4. 거시지표 수집 (업데이트)
-    logger.info("[4/4] Collecting macro indicators (Update)...")
+    # 5. 거시지표 수집 (업데이트)
+    logger.info("[5/5] Collecting macro indicators (Update)...")
     macro_collector = MacroCollector(db=db, client=client)
     macro_collector.collect_update()
 
@@ -133,8 +171,23 @@ def run_collect_macro(db: DatabaseManager, client: BridgeClient):
 def run_collect_overseas(db: DatabaseManager, client: BridgeClient):
     """해외 자산만 수집"""
     logger.info("Collecting overseas assets...")
-    mapper = AssetUniverseMapper()
-    overseas_codes = mapper.get_codes_by_source("overseas")
+
+    overseas_codes = []
+    try:
+        for us_type, label in [(2, "국가대표지수"), (4, "해외개별주식"),
+                                (6, "원자재/반도체"), (7, "환율")]:
+            codes = client.fetch_overseas_universe(us_type)
+            logger.info(f"  → {label} (UsType={us_type}): {len(codes)}개")
+            overseas_codes.extend(codes)
+
+        mapper = AssetUniverseMapper()
+        static_codes = mapper.get_codes_by_source("overseas")
+        overseas_codes = list(dict.fromkeys(overseas_codes + static_codes))
+        logger.info(f"  → 총 해외 유니버스: {len(overseas_codes)}개")
+    except Exception as e:
+        logger.error(f"  → Failed to fetch overseas universe: {e}")
+        mapper = AssetUniverseMapper()
+        overseas_codes = mapper.get_codes_by_source("overseas")
 
     overseas_collector = OverseasCollector(db=db, client=client)
     overseas_collector.collect_batch(overseas_codes)

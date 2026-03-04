@@ -19,8 +19,8 @@ class Settings:
     # ── 거시지표 해외 코드 (CpSvrNew8300) ──
     MACRO_CODES = {
         "다우존스": ".DJI",
-        "나스닥": ".IXIC",
-        "S&P500": ".INX",
+        "나스닥": "COMP",
+        "S&P500": "SPX",
         "USD/KRW": "DS#USDKRW",
         "WTI원유": "CM@PWTI",
     }
@@ -31,11 +31,11 @@ class Settings:
         "Equity_Domestic": {"source": "domestic", "code": "A069500"},       # KOSPI 200 ETF
         # 해외 주식 (CpSvrNew8300 조회) — 직접 투자
         "Equity_US_Tech": {"source": "overseas", "codes": ["AAPL", "MSFT", "NVDA", "GOOGL", "AMZN"]},
-        "Equity_US_Index": {"source": "overseas", "codes": [".DJI", ".IXIC", ".INX"]},
+        "Equity_US_Index": {"source": "overseas", "codes": [".DJI", "COMP", "SPX"]},
         # 안전자산: 채권 (StockChart 조회)
         "FixedIncome": {"source": "domestic", "code": "A304660"},           # KODEX 미국채울트라30년선물(H)
         # 원자재 (CpSvrNew8300 조회)
-        "Commodity_Gold": {"source": "overseas", "codes": ["CM@GOLD"]},
+        "Commodity_Gold": {"source": "overseas", "codes": ["CM@NGLD"]},
         "Commodity_Oil": {"source": "overseas", "codes": ["CM@PWTI"]},
         # 환율 (CpSvrNew8300 조회)
         "FX_USDKRW": {"source": "overseas", "codes": ["DS#USDKRW"]},
@@ -61,7 +61,7 @@ class Settings:
     }
 
     # ── 데이터 수집 ──
-    CYBOS_THROTTLE_WAIT = 1.00      # API 호출 간격 (초) — 15초당 60건 제한 대응
+    CYBOS_THROTTLE_WAIT = 0.25      # API 호출 간격 (초) — 15초당 60건 제한 대응
     DEFAULT_DAILY_COUNT = 500       # 기본 일봉 수집 건수
     DEFAULT_MINUTE_COUNT = 5000     # 기본 분봉 수집 건수
 

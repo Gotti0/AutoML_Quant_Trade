@@ -145,6 +145,20 @@ class BridgeClient:
         data = self._get("/api/dostk/universe")
         return data.get("data", [])
 
+    def fetch_overseas_universe(self, us_type: int = 1) -> List[str]:
+        """
+        해외 종목 코드 목록 조회 (CpUsCode.GetUsCodeList).
+
+        Parameters:
+            us_type: 카테고리 코드
+                0=금리, 1=전체, 2=국가대표지수, 3=업종지수,
+                4=해외개별주식, 5=ADR, 6=원자재, 7=환율
+        Returns:
+            해당 카테고리의 해외 종목 코드 리스트
+        """
+        data = self._get("/api/overseas/universe", params={"us_type": us_type})
+        return data.get("data", [])
+
     def close(self):
         """HTTP 클라이언트 연결 해제."""
         self.client.close()
