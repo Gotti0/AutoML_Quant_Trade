@@ -88,6 +88,21 @@ class DatabaseManager:
                 )
             """)
 
+            # 5. 시스템 통합 로그
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS system_logs (
+                    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    level     TEXT    NOT NULL,
+                    source    TEXT    NOT NULL,
+                    message   TEXT    NOT NULL
+                )
+            """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_system_logs_source_level
+                ON system_logs(source, level)
+            """)
+
             logger.info(f"Database schema initialized: {self.db_path}")
 
     @contextmanager
@@ -219,6 +234,36 @@ class DatabaseManager:
                 records
             )
             logger.info(f"Upserted {len(records)} macro rows for {indicator}")
+
+    def insert_log(self, level: str, source: str, message: str):
+        """
+        시스템 통합 로그 단건 삽입.
+        (주로 Backend/Bridge SQLiteLogHandler 나 Frontend API 연동 시 사용)
+        """
+        with self._connection() as conn:
+            conn.execute(
+                "INSERT INTO system_logs (level, source, message) VALUES (?, ?, ?)",
+                (level, source, message)
+            )
+
+    def load_recent_logs(self, limit: int = 100, source: Optional[str] = None):
+        """
+        최신 시스템 로그 조회.
+        """
+        query = "SELECT id, timestamp, level, source, message FROM system_logs"
+        params = []
+        
+        if source:
+            query += " WHERE source = ?"
+            params.append(source)
+            
+        query += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        
+        with self._connection() as conn:
+            df = pd.read_sql_query(query, conn, params=params)
+        return df
+
 
     # ══════════════════════════════════════════
     # 읽기 (기간 필터링 + DataFrame 반환)

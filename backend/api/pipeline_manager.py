@@ -14,7 +14,21 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-logger = logging.getLogger(__name__)
+import queue
+import sys
+from typing import Dict, Any, Callable
+import subprocess
+import os
+
+from backend.data.database import DatabaseManager
+from backend.data.bridge_client import BridgeClient
+from backend.utils.logger import setup_integrated_logger
+
+# 이 모듈이 임포트될 때 기본 logger 생성 (main과 동일한 방식)
+# 단, pipeline_manager 자체의 DB 인스턴스가 없을 수 있으니 초기화 시 주입 필요성 고려
+# 여기서는 싱글톤처럼 새로 생성해서 붙임
+_db_for_logger = DatabaseManager()
+logger = setup_integrated_logger(_db_for_logger, source="backend")
 
 
 class PipelineStatus(str, Enum):
@@ -56,6 +70,8 @@ VALID_COMMANDS = {
     "collect-update": "기존 종목 증분 수집 (국내+해외+거시)",
     "collect-overseas": "해외 자산만 수집",
     "collect-macro": "거시지표만 수집",
+    "train-regime": "국면 모델 학습 (Phase 2)",
+    "backtest": "백테스팅 실행 (Phase 3)",
 }
 
 
@@ -156,16 +172,19 @@ class PipelineManager:
 
         try:
             db = DatabaseManager()
-            client = BridgeClient()
 
-            # 브릿지 서버 연결 확인
-            try:
-                client.health_check()
-            except Exception as e:
-                raise ConnectionError(
-                    f"Bridge server is not reachable: {e}. "
-                    f"Please start run_bridge_32bit.bat first."
-                )
+            # 데이터 수집 명령어인 경우에만 Bridge Client 활성화
+            is_collect_command = command.startswith("collect-")
+            if is_collect_command:
+                client = BridgeClient()
+                # 브릿지 서버 연결 확인
+                try:
+                    client.health_check()
+                except Exception as e:
+                    raise ConnectionError(
+                        f"Bridge server is not reachable: {e}. "
+                        f"Please start run_bridge_32bit.bat first."
+                    )
 
             # 명령어에 따라 파이프라인 함수 호출
             from backend.main import (
@@ -173,6 +192,8 @@ class PipelineManager:
                 run_collect_update,
                 run_collect_overseas,
                 run_collect_macro,
+                run_train_regime,
+                run_backtest,
             )
 
             if command == "collect-insert":
@@ -183,6 +204,10 @@ class PipelineManager:
                 run_collect_overseas(db, client)
             elif command == "collect-macro":
                 run_collect_macro(db, client)
+            elif command == "train-regime":
+                run_train_regime(db)
+            elif command == "backtest":
+                run_backtest(db)
 
             self._status = PipelineStatus.COMPLETED
 

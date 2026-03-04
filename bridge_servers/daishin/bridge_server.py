@@ -10,9 +10,14 @@ from contextlib import asynccontextmanager
 # 32비트 환경에서 로컬 모듈 임포트
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from daishin_agent import DaishinAgent
+from bridge_logger import setup_bridge_logger
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
+# 상위 폴더(backend/config/settings.py) 기준 DB_PATH 지정 로직 대체:
+# bridge_server의 상위 2단계가 루트(AutoML_Quant_Trade)라고 가정
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DB_PATH = os.path.join(PROJECT_ROOT, "cache_daishin", "quant_data.db")
+
+logger = setup_bridge_logger(db_path=DB_PATH)
 
 # Initialize agent globally for single instance use
 agent = DaishinAgent()

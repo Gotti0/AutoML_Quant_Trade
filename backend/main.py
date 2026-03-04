@@ -24,15 +24,13 @@ from backend.data.stock_collector import StockCollector
 from backend.data.overseas_collector import OverseasCollector
 from backend.data.macro_collector import MacroCollector
 from backend.data.asset_universe import AssetUniverseMapper
+from backend.utils.logger import setup_integrated_logger
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s - %(message)s",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-    ]
-)
-logger = logging.getLogger(__name__)
+# DB 객체를 메인에서 먼저 생성하여 로거 설정에 주입
+# (만약 초기화 시점이 맞지 않으면 전역 세팅 방식 고민이 필요하지만, 여기서는 main 진입 시점 생성)
+db = DatabaseManager()
+logger = setup_integrated_logger(db, source="backend")
+
 
 
 def run_collect_insert(db: DatabaseManager, client: BridgeClient):
@@ -193,6 +191,155 @@ def run_collect_overseas(db: DatabaseManager, client: BridgeClient):
     overseas_collector.collect_batch(overseas_codes)
 
 
+def run_train_regime(db: DatabaseManager):
+    """국면 모델 학습 (Phase 2)"""
+    logger.info("Phase 2: Regime detection training")
+    from backend.models.feature_engineer import FeatureEngineer
+    from backend.models.regime_hmm import RegimeHMM
+    from backend.data.macro_collector import MacroCollector
+
+    # 국내 대표 종목 또는 거시 지표 기반 피처 추출
+    fe = FeatureEngineer()
+    price_df = db.query_dataframe(
+        "SELECT date, open, high, low, close, volume FROM stock_daily "
+        "ORDER BY date"
+    )
+    if price_df.empty:
+        logger.error("No stock_daily data found. Run --collect first.")
+        return
+
+    features = fe.extract(price_df)
+    if features.empty:
+        logger.error("Feature extraction produced empty results.")
+        return
+
+    hmm = RegimeHMM()
+    hmm.fit(features)
+    hmm.save()
+    logger.info(f"Regime model saved. Transition matrix:\n{hmm.get_transition_matrix()}")
+
+
+def run_backtest(db: DatabaseManager):
+    """백테스팅 실행 (Phase 3)"""
+    logger.info("Phase 3+4: Backtesting with Meta Portfolio Engine")
+    from backend.engine.ledger import MasterLedger
+    from backend.engine.transaction_model import TransactionModel
+    from backend.meta.meta_portfolio_loop import MetaPortfolioLoop
+    from backend.models.regime_hmm import RegimeHMM
+
+    # 원장 세팅
+    ledger = MasterLedger(initial_capital=Settings.INITIAL_CAPITAL)
+    ledger.create_sub_account("MidFreq", 0.15)
+    ledger.create_sub_account("Swing", 0.35)
+    ledger.create_sub_account("MidShort", 0.35)
+    ledger.create_sub_account("Long_Safe", 0.15)
+
+    # HMM 모델 로드 (학습 완료된 경우)
+    regime_model = None
+    try:
+        regime_model = RegimeHMM()
+        regime_model.load()
+        logger.info("Regime model loaded successfully.")
+    except Exception as e:
+        logger.warning(f"Regime model not found, using uniform fallback: {e}")
+        regime_model = None
+
+    # 메타 포트폴리오 루프
+    loop = MetaPortfolioLoop(
+        ledger=ledger,
+        transaction_model=TransactionModel(),
+        regime_model=regime_model,
+    )
+
+    # 시장 데이터 로드
+    tickers = db.query_dataframe(
+        "SELECT DISTINCT ticker FROM stock_daily"
+    )["ticker"].tolist()
+
+    market_data = {}
+    for ticker in tickers[:10]:  # 상위 10 종목으로 제한 (성능)
+        df = db.query_dataframe(
+            f"SELECT date, open, high, low, close, volume "
+            f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
+        )
+        if not df.empty:
+            market_data[ticker] = df
+
+    if not market_data:
+        logger.error("No market data available. Run --collect first.")
+        return
+
+    equity_curve = loop.run(market_data)
+    logger.info(f"Equity curve: {len(equity_curve)} data points")
+
+    # --- [NEW] 백테스트 결과 직렬화 로직 ---
+    import json
+    import numpy as np
+    from pathlib import Path
+    
+    cache_dir = Path("cache_daishin")
+    cache_dir.mkdir(exist_ok=True)
+    
+    algorithms = []
+    for idx, (name, acc) in enumerate(ledger.sub_accounts.items(), 1):
+        metrics = acc.get_performance_metrics()
+        curve_df = acc.get_equity_curve()
+        
+        eq_data = []
+        if not curve_df.empty:
+            for _, row in curve_df.iterrows():
+                ts = str(int(row['timestamp']))
+                date_str = f"{ts[:4]}-{ts[4:6]}-{ts[6:]}" if len(ts) == 8 else ts
+                eq_data.append({"date": date_str, "equity": float(row['equity'])})
+        
+        algorithms.append({
+            "id": str(idx),
+            "name": name,
+            "timeframe": "Daily",
+            "rank": idx,
+            "metrics": {
+                "cumulativeReturn": float(metrics.get("total_return", 0) * 100),
+                "maxDrawdown": float(metrics.get("max_drawdown", 0) * 100),
+                "sharpeRatio": float(metrics.get("sharpe_ratio", 0)),
+                "winRate": float(metrics.get("win_rate", 0) * 100)
+            },
+            "equityCurve": eq_data[-100:] if len(eq_data) > 100 else eq_data
+        })
+        
+    master_metrics = ledger.get_performance_metrics()
+    probs = loop.last_regime_probs if loop.last_regime_probs is not None else [0.33, 0.33, 0.34]
+    regime_labels = ["Bull", "Bear", "Crash"]
+    dominant_idx = int(np.argmax(probs))
+    
+    last_date = "1970-01-01"
+    if not equity_curve.empty:
+        ts = str(int(equity_curve.iloc[-1]["timestamp"]))
+        last_date = f"{ts[:4]}-{ts[4:6]}-{ts[6:]}" if len(ts) == 8 else ts
+        
+    dashboard_data = {
+        "currentRegime": {
+            "timestamp": last_date,
+            "probabilities": {
+                "Bull": float(probs[0]),
+                "Bear": float(probs[1]),
+                "Crash": float(probs[2])
+            },
+            "dominantRegime": regime_labels[dominant_idx]
+        },
+        "masterMetrics": {
+            "initialCapital": float(master_metrics.get("initial_capital", 0)),
+            "totalReturn": float(master_metrics.get("total_return", 0) * 100),
+        },
+        "algorithms": algorithms
+    }
+    
+    out_path = cache_dir / "latest_backtest.json"
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(dashboard_data, f, ensure_ascii=False, indent=2)
+        
+    logger.info(f"Dashboard data saved to {out_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AutoML Quant Trade Pipeline")
     parser.add_argument("--collect-insert", action="store_true", help="Run data collection for new tickers only (Insert)")
@@ -206,11 +353,10 @@ def main():
 
     args = parser.parse_args()
 
+    args = parser.parse_args()
+
     # 디렉토리 생성
     Settings.ensure_dirs()
-
-    # DB 초기화
-    db = DatabaseManager()
 
     if args.db_info:
         print(f"Database: {Settings.DB_PATH}")
@@ -219,6 +365,7 @@ def main():
         print(f"  overseas_daily: {db.get_row_count('overseas_daily'):>10,} rows")
         print(f"  macro_daily:    {db.get_row_count('macro_daily'):>10,} rows")
         return
+
 
     # 브릿지 필요한 작업들
     if args.collect_insert or args.collect_update or args.collect_macro or args.collect_overseas:
@@ -237,150 +384,11 @@ def main():
         return
 
     if args.train_regime:
-        logger.info("Phase 2: Regime detection training")
-        from backend.models.feature_engineer import FeatureEngineer
-        from backend.models.regime_hmm import RegimeHMM
-        from backend.data.macro_collector import MacroCollector
-
-        # 국내 대표 종목 또는 거시 지표 기반 피처 추출
-        fe = FeatureEngineer()
-        price_df = db.query_dataframe(
-            "SELECT date, open, high, low, close, volume FROM stock_daily "
-            "ORDER BY date"
-        )
-        if price_df.empty:
-            logger.error("No stock_daily data found. Run --collect first.")
-            return
-
-        features = fe.extract(price_df)
-        if features.empty:
-            logger.error("Feature extraction produced empty results.")
-            return
-
-        hmm = RegimeHMM()
-        hmm.fit(features)
-        hmm.save()
-        logger.info(f"Regime model saved. Transition matrix:\n{hmm.get_transition_matrix()}")
+        run_train_regime(db)
         return
 
     if args.backtest:
-        logger.info("Phase 3+4: Backtesting with Meta Portfolio Engine")
-        from backend.engine.ledger import MasterLedger
-        from backend.engine.transaction_model import TransactionModel
-        from backend.meta.meta_portfolio_loop import MetaPortfolioLoop
-        from backend.models.regime_hmm import RegimeHMM
-
-        # 원장 세팅
-        ledger = MasterLedger(initial_capital=Settings.INITIAL_CAPITAL)
-        ledger.create_sub_account("MidFreq", 0.15)
-        ledger.create_sub_account("Swing", 0.35)
-        ledger.create_sub_account("MidShort", 0.35)
-        ledger.create_sub_account("Long_Safe", 0.15)
-
-        # HMM 모델 로드 (학습 완료된 경우)
-        regime_model = None
-        try:
-            regime_model = RegimeHMM()
-            regime_model.load()
-            logger.info("Regime model loaded successfully.")
-        except Exception as e:
-            logger.warning(f"Regime model not found, using uniform fallback: {e}")
-            regime_model = None
-
-        # 메타 포트폴리오 루프
-        loop = MetaPortfolioLoop(
-            ledger=ledger,
-            transaction_model=TransactionModel(),
-            regime_model=regime_model,
-        )
-
-        # 시장 데이터 로드
-        tickers = db.query_dataframe(
-            "SELECT DISTINCT ticker FROM stock_daily"
-        )["ticker"].tolist()
-
-        market_data = {}
-        for ticker in tickers[:10]:  # 상위 10 종목으로 제한 (성능)
-            df = db.query_dataframe(
-                f"SELECT date, open, high, low, close, volume "
-                f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
-            )
-            if not df.empty:
-                market_data[ticker] = df
-
-        if not market_data:
-            logger.error("No market data available. Run --collect first.")
-            return
-
-        equity_curve = loop.run(market_data)
-        logger.info(f"Equity curve: {len(equity_curve)} data points")
-
-        # --- [NEW] 백테스트 결과 직렬화 로직 ---
-        import json
-        import numpy as np
-        from pathlib import Path
-        
-        cache_dir = Path("cache_daishin")
-        cache_dir.mkdir(exist_ok=True)
-        
-        algorithms = []
-        for idx, (name, acc) in enumerate(ledger.sub_accounts.items(), 1):
-            metrics = acc.get_performance_metrics()
-            curve_df = acc.get_equity_curve()
-            
-            eq_data = []
-            if not curve_df.empty:
-                for _, row in curve_df.iterrows():
-                    ts = str(int(row['timestamp']))
-                    date_str = f"{ts[:4]}-{ts[4:6]}-{ts[6:]}" if len(ts) == 8 else ts
-                    eq_data.append({"date": date_str, "equity": float(row['equity'])})
-            
-            algorithms.append({
-                "id": str(idx),
-                "name": name,
-                "timeframe": "Daily",
-                "rank": idx,
-                "metrics": {
-                    "cumulativeReturn": float(metrics.get("total_return", 0) * 100),
-                    "maxDrawdown": float(metrics.get("max_drawdown", 0) * 100),
-                    "sharpeRatio": float(metrics.get("sharpe_ratio", 0)),
-                    "winRate": float(metrics.get("win_rate", 0) * 100)
-                },
-                "equityCurve": eq_data[-100:] if len(eq_data) > 100 else eq_data
-            })
-            
-        master_metrics = ledger.get_performance_metrics()
-        probs = loop.last_regime_probs if loop.last_regime_probs is not None else [0.33, 0.33, 0.34]
-        regime_labels = ["Bull", "Bear", "Crash"]
-        dominant_idx = int(np.argmax(probs))
-        
-        last_date = "1970-01-01"
-        if not equity_curve.empty:
-            ts = str(int(equity_curve.iloc[-1]["timestamp"]))
-            last_date = f"{ts[:4]}-{ts[4:6]}-{ts[6:]}" if len(ts) == 8 else ts
-            
-        dashboard_data = {
-            "currentRegime": {
-                "timestamp": last_date,
-                "probabilities": {
-                    "Bull": float(probs[0]),
-                    "Bear": float(probs[1]),
-                    "Crash": float(probs[2])
-                },
-                "dominantRegime": regime_labels[dominant_idx]
-            },
-            "masterMetrics": {
-                "initialCapital": float(master_metrics.get("initial_capital", 0)),
-                "totalReturn": float(master_metrics.get("total_return", 0) * 100),
-            },
-            "algorithms": algorithms
-        }
-        
-        out_path = cache_dir / "latest_backtest.json"
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(dashboard_data, f, ensure_ascii=False, indent=2)
-            
-        logger.info(f"Dashboard data saved to {out_path}")
+        run_backtest(db)
         return
 
     if args.server:

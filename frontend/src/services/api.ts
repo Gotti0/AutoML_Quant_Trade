@@ -21,8 +21,20 @@ export const fetchDashboardData = async (): Promise<DashboardResponse> => {
         const response = await apiClient.get<DashboardResponse>('/dashboard');
         return response.data;
     } catch (error) {
+        let msg = 'Unknown error';
+        if (error instanceof Error) msg = error.message;
         console.error('Error fetching dashboard data:', error);
+        await sendClientLog('ERROR', `Dashboard fetch failed: ${msg}`);
         throw error;
+    }
+};
+
+export const sendClientLog = async (level: string, message: string): Promise<void> => {
+    // API 연결 오류 등 치명적인 상황일 수 있으므로 실패해도 화면을 멈추지 않도록 catch 추가
+    try {
+        await apiClient.post('/pipeline/logs', { level, message });
+    } catch (e) {
+        console.error('Failed to send client log to server:', e);
     }
 };
 
@@ -34,18 +46,41 @@ export const fetchRegimeHistory = async (): Promise<RegimeProbability[]> => {
 // ── Pipeline API ──
 
 export const startPipeline = async (command: string): Promise<{ taskId: string; command: string; status: string }> => {
-    const response = await apiClient.post('/pipeline/run', null, { params: { command } });
-    return response.data;
+    try {
+        const response = await apiClient.post('/pipeline/run', null, { params: { command } });
+        await sendClientLog('INFO', `Triggered pipeline command: ${command}`);
+        return response.data;
+    } catch (error) {
+        let msg = 'Unknown error';
+        if (error instanceof Error) msg = error.message;
+        await sendClientLog('ERROR', `Failed to start pipeline ${command}: ${msg}`);
+        throw error;
+    }
 };
 
 export const fetchPipelineStatus = async (): Promise<PipelineStatus> => {
-    const response = await apiClient.get<PipelineStatus>('/pipeline/status');
-    return response.data;
+    try {
+        const response = await apiClient.get<PipelineStatus>('/pipeline/status');
+        return response.data;
+    } catch (error) {
+        // Status polling은 빈번하므로 에러를 로그 레벨로 조정 (Warning)
+        let msg = 'Unknown error';
+        if (error instanceof Error) msg = error.message;
+        await sendClientLog('WARNING', `Status polling failed: ${msg}`);
+        throw error;
+    }
 };
 
 export const fetchPipelineCommands = async (): Promise<PipelineCommand[]> => {
-    const response = await apiClient.get<{ commands: PipelineCommand[] }>('/pipeline/commands');
-    return response.data.commands;
+    try {
+        const response = await apiClient.get<{ commands: PipelineCommand[] }>('/pipeline/commands');
+        return response.data.commands;
+    } catch (error) {
+        let msg = 'Unknown error';
+        if (error instanceof Error) msg = error.message;
+        await sendClientLog('WARNING', `Failed to fetch commands, using fallback. Error: ${msg}`);
+        throw error;
+    }
 };
 
 export const subscribePipelineLogs = (

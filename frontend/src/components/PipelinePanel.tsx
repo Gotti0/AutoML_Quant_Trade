@@ -33,6 +33,8 @@ export const PipelinePanel: React.FC = () => {
                     { command: 'collect-update', description: '기존 종목 증분 수집' },
                     { command: 'collect-overseas', description: '해외 자산만 수집' },
                     { command: 'collect-macro', description: '거시지표만 수집' },
+                    { command: 'train-regime', description: '국면 모델 학습 (Phase 2)' },
+                    { command: 'backtest', description: '백테스팅 실행 (Phase 3)' },
                 ]);
             });
         return () => {
@@ -103,6 +105,8 @@ export const PipelinePanel: React.FC = () => {
                             { command: 'collect-update', description: '기존 종목 증분 수집' },
                             { command: 'collect-overseas', description: '해외 자산만 수집' },
                             { command: 'collect-macro', description: '거시지표만 수집' },
+                            { command: 'train-regime', description: '국면 모델 학습 (Phase 2)' },
+                            { command: 'backtest', description: '백테스팅 실행 (Phase 3)' },
                         ]).map((cmd) => (
                             <option key={cmd.command} value={cmd.command}>
                                 {cmd.command} — {cmd.description}
@@ -133,8 +137,8 @@ export const PipelinePanel: React.FC = () => {
 
             {/* Log Terminal */}
             <div
-                className="px-4 py-3 font-mono text-xs leading-5 overflow-y-auto bg-slate-900/50"
-                style={{ maxHeight: '400px', contain: 'strict' }}
+                className="px-5 py-4 font-mono text-sm leading-6 overflow-y-auto bg-slate-900/50"
+                style={{ height: '600px', contain: 'strict' }}
             >
                 {logs.length === 0 ? (
                     <div className="text-slate-600 text-center py-8">

@@ -11,10 +11,12 @@ import asyncio
 import json
 import logging
 
+from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from backend.api.pipeline_manager import PipelineManager, VALID_COMMANDS
+from backend.data.database import DatabaseManager
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/pipeline", tags=["pipeline"])
@@ -26,6 +28,33 @@ def _get_manager(request: Request) -> PipelineManager:
     if manager is None:
         raise HTTPException(status_code=503, detail="PipelineManager not initialized")
     return manager
+
+
+# 프론트엔드에서 보낼 로그 데이터 스펙
+class ClientLogPayload(BaseModel):
+    level: str
+    message: str
+
+
+@router.post("/logs")
+def report_client_log(payload: ClientLogPayload):
+    """프론트엔드 등 클라이언트에서 발생한 예외/상태를 시스템 DB에 기록"""
+    db = DatabaseManager()
+    db.insert_log(level=payload.level, source="frontend", message=payload.message)
+    return {"status": "ok"}
+
+
+@router.get("/logs")
+def get_system_logs(limit: int = 200, source: str = None):
+    """통합 시스템 로그 조회"""
+    db = DatabaseManager()
+    df = db.load_recent_logs(limit=limit, source=source)
+    if df.empty:
+        return {"logs": []}
+    
+    # DataFrame을 dict list로 변환 (timestamp 직렬화 위해 문자열 변환 적용)
+    logs_list = df.to_dict(orient="records")
+    return {"logs": logs_list}
 
 
 @router.get("/commands")

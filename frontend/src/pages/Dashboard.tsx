@@ -4,6 +4,7 @@ import { fetchDashboardData } from '../services/api';
 import { AlgorithmCard } from '../components/AlgorithmCard';
 import { RegimeWidget } from '../components/RegimeWidget';
 import { PipelinePanel } from '../components/PipelinePanel';
+import { SystemLogsPanel } from '../components/SystemLogsPanel';
 import { Activity, LayoutDashboard, RefreshCcw } from 'lucide-react';
 
 export const Dashboard: React.FC = () => {
@@ -95,6 +96,11 @@ export const Dashboard: React.FC = () => {
                             </div>
                         )}
                     </div>
+                </section>
+
+                {/* System Logs Section */}
+                <section className="h-96">
+                    <SystemLogsPanel />
                 </section>
             </main>
         </div>
