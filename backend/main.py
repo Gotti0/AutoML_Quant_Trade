@@ -254,24 +254,47 @@ def run_backtest(db: DatabaseManager):
     # 전략 등록
     from backend.strategies.trend_following import TrendFollowing
     from backend.strategies.long_term_value import LongTermValueStrategy
+    from backend.strategies.mid_freq_scalping import MidFreqScalping
+    from backend.strategies.swing_mean_reversion import SwingMeanReversion
 
-    # 시연을 위해 단순 트렌드 팔로잉과 장기 가치 전략 등록
+    # 전략 등록
+    loop.register_strategy("MidFreq", MidFreqScalping(rsi_period=14, oversold=30, overbought=70, vol_spike_ratio=2.0))
     loop.register_strategy("Swing", TrendFollowing(fast_period=20, slow_period=50))
+    loop.register_strategy("MidShort", SwingMeanReversion(bb_period=20, bb_std=2.0, entry_z=-2.0, exit_z=0.0))
     loop.register_strategy("Long_Safe", LongTermValueStrategy(profile="Balanced", rebalance_freq=21))
 
-    # 시장 데이터 로드
-    tickers = db.query_dataframe(
-        "SELECT DISTINCT ticker FROM stock_daily"
+    # 시장 데이터 로드 (국내 주식 + 해외 유니버스 모두)
+    from backend.data.asset_universe import AssetUniverseMapper
+    mapper = AssetUniverseMapper()
+    target_codes_overseas = mapper.get_codes_by_source("overseas")
+    target_codes_domestic_etf = mapper.get_codes_by_source("domestic")
+    
+    # 1. 일반 국내 주식 일부 (트렌드/스윙 테스트용)
+    domestic_tickers = db.query_dataframe(
+        "SELECT DISTINCT ticker FROM stock_daily LIMIT 10"
     )["ticker"].tolist()
-
+    
+    all_domestic_targets = list(set(domestic_tickers + target_codes_domestic_etf))
+    
     market_data = {}
-    for ticker in tickers[:10]:  # 상위 10 종목으로 제한 (성능)
+    
+    # KOSPI 일반 주식 및 국내 상장 ETF 데이터 로드
+    for ticker in all_domestic_targets:
         df = db.query_dataframe(
             f"SELECT date, open, high, low, close, volume "
             f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
         )
         if not df.empty:
             market_data[ticker] = df
+
+    # 2. 해외 자산 (장기 투자용) 데이터 로드
+    for code in target_codes_overseas:
+        df = db.query_dataframe(
+            f"SELECT date, open, high, low, close, volume "
+            f"FROM overseas_daily WHERE code='{code}' ORDER BY date"
+        )
+        if not df.empty:
+            market_data[code] = df
 
     if not market_data:
         logger.error("No market data available. Run --collect first.")
