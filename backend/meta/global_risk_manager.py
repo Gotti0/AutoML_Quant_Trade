@@ -62,11 +62,13 @@ class GlobalRiskManager:
 
         # 서킷 브레이커
         if drawdown < -self.max_portfolio_drawdown:
-            self._circuit_broken = True
-            logger.warning(
-                f"🚨 PORTFOLIO CIRCUIT BREAKER: "
-                f"drawdown {drawdown:.2%} < limit -{self.max_portfolio_drawdown:.2%}"
-            )
+            # 연속적인 로깅 방지: 이미 서킷브레이크 상태라면 로깅 안 함
+            if not self._circuit_broken:
+                self._circuit_broken = True
+                logger.warning(
+                    f"🚨 PORTFOLIO CIRCUIT BREAKER: "
+                    f"drawdown {drawdown:.2%} < limit -{self.max_portfolio_drawdown:.2%}"
+                )
             return {
                 "status": "circuit_broken",
                 "current_drawdown": drawdown,

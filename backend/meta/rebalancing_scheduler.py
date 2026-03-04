@@ -97,6 +97,8 @@ class RebalancingScheduler:
                           market_prices: Dict[str, float]):
         """
         리밸런싱 실행: 목표 배분 계산 → 서브 계정 간 자본 이동.
+        
+        주의: execute_rebalance 에 들어왔다는 것은 이미 should_rebalance() 가 True 였음을 뜻합니다.
 
         Parameters:
             ledger: 마스터 원장
@@ -104,6 +106,21 @@ class RebalancingScheduler:
             current_date: 현재 날짜
             market_prices: 현재 시장 가격
         """
+        # 0. 동적 비중 최적화 (PyTorch HRP) - 리밸런싱 당시에만 갱신
+        if hasattr(self.allocator, 'update_dynamic_weights'):
+            engines_order = list(self.allocator.w_star.keys())
+            returns_tensor = ledger.get_subaccount_returns_tensor(window=60, engines_order=engines_order)
+            if returns_tensor is not None and len(returns_tensor) >= 2:
+                from backend.meta.pytorch_hrp import TorchHRPOptimizer
+                hrp = TorchHRPOptimizer()
+                weights = hrp.calculate_hrp_weights(returns_tensor)
+                
+                new_w_star = {
+                    engine: weights[i].item()
+                    for i, engine in enumerate(engines_order)
+                }
+                self.allocator.update_dynamic_weights(new_w_star)
+
         # 1. 목표 배분 계산
         target = self.allocator.calculate_target(regime_probs)
 

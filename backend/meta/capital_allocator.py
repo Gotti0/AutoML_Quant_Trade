@@ -35,8 +35,30 @@ class CapitalAllocator:
         """
         self.w_star = w_star or self.W_STAR
         self.n_regimes = n_regimes
+        self.is_dynamic = False
 
         # 가중치 정합성 검증
+        self._validate_weights()
+
+    def update_dynamic_weights(self, new_weights: Dict[str, float]):
+        """
+        PyTorch HRP 등을 통해 산출된 1D 동적 최적 비중으로 W_STAR를 덮어씀.
+        모든 국면에 대해 동일한 비중을 적용하여, HMM 국면 모델의 영향보다
+        HRP의 포트폴리오 리스크 분배가 우선시 되도록 설정함.
+        """
+        w_changed = False
+        for engine, w in new_weights.items():
+            if engine in self.w_star:
+                # 변경분 체크 후 로깅
+                if abs(self.w_star[engine][0] - w) > 0.001:
+                    w_changed = True
+                self.w_star[engine] = [w] * self.n_regimes
+        
+        self.is_dynamic = True
+        
+        if w_changed:
+            logger.debug(f"Capital Allocator weights updated dynamically (HRP): {new_weights}")
+            
         self._validate_weights()
 
     def _validate_weights(self):

@@ -260,6 +260,31 @@ class MasterLedger:
             return pd.DataFrame()
         return pd.DataFrame(self.equity_history)
 
+    def get_subaccount_returns_tensor(self, window: int = 60, engines_order: List[str] = None):
+        """
+        최근 window일 간의 서브계정 수익률을 형상 (N_days, M_engines)의 PyTorch Tensor로 반환.
+        """
+        if len(self.equity_history) < 2:
+            return None
+            
+        import torch
+        import pandas as pd
+        
+        df = pd.DataFrame(self.equity_history)
+        if engines_order is None:
+            engines_order = list(self.sub_accounts.keys())
+            
+        # N일치 추출 (수익률 계산을 위해 window+1개 추출)
+        df_window = df.tail(window + 1).copy()
+        
+        # 각 엔진별 칼럼 추출
+        equities = df_window[engines_order]
+        
+        # 수익률: pct_change 후 첫 행(NaN) 드롭
+        returns = equities.pct_change().dropna()
+        
+        return torch.tensor(returns.values, dtype=torch.float32)
+
     def get_all_trades(self) -> pd.DataFrame:
         """모든 서브 계정의 거래 로그 통합."""
         all_trades = []
