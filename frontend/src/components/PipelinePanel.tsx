@@ -19,7 +19,7 @@ export const PipelinePanel: React.FC = () => {
     } = usePipelineStore();
 
     const [selectedCommand, setSelectedCommand] = React.useState('collect-macro');
-    const logEndRef = useRef<HTMLDivElement>(null);
+    const scrollContainerRef = useRef<HTMLDivElement>(null);
     const unsubRef = useRef<(() => void) | null>(null);
 
     // 명령어 목록 로드
@@ -44,7 +44,9 @@ export const PipelinePanel: React.FC = () => {
 
     // 로그 자동 스크롤
     useEffect(() => {
-        logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        if (scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = scrollContainerRef.current.scrollHeight;
+        }
     }, [logs]);
 
     const handleStart = async () => {
@@ -137,6 +139,7 @@ export const PipelinePanel: React.FC = () => {
 
             {/* Log Terminal */}
             <div
+                ref={scrollContainerRef}
                 className="px-5 py-4 font-mono text-sm leading-6 overflow-y-auto bg-slate-900/50"
                 style={{ height: '600px', contain: 'strict' }}
             >
@@ -152,7 +155,6 @@ export const PipelinePanel: React.FC = () => {
                         </div>
                     ))
                 )}
-                <div ref={logEndRef} />
             </div>
 
             {/* Footer */}

@@ -95,19 +95,16 @@ class DatabaseManager:
                     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     level     TEXT    NOT NULL,
                     source    TEXT    NOT NULL,
-                    message   TEXT    NOT NULL
+                    message   TEXT    NOT NULL            
                 )
             """)
-            cursor.execute("""
-                CREATE INDEX IF NOT EXISTS idx_system_logs_source_level
-                ON system_logs(source, level)
-            """)
 
-            logger.info(f"Database schema initialized: {self.db_path}")
+            # 잦은 인스턴스화로 인한 로그 스팸 방지를 위해 DEBUG로 하향
+            logger.debug(f"Database schema initialized: {self.db_path}")
 
     @contextmanager
     def _connection(self):
-        """트랜잭션 스코프 관리 — 예외 시 자동 롤백"""
+        """트랜잭션 스코프 관리"""
         conn = sqlite3.connect(self.db_path)
         conn.execute("PRAGMA journal_mode=WAL")     # 동시 읽기 성능 향상
         conn.execute("PRAGMA synchronous=NORMAL")   # 성능과 안전성 균형

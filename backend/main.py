@@ -251,6 +251,14 @@ def run_backtest(db: DatabaseManager):
         regime_model=regime_model,
     )
 
+    # 전략 등록
+    from backend.strategies.trend_following import TrendFollowing
+    from backend.strategies.long_term_value import LongTermValueStrategy
+
+    # 시연을 위해 단순 트렌드 팔로잉과 장기 가치 전략 등록
+    loop.register_strategy("Swing", TrendFollowing(fast_period=20, slow_period=50))
+    loop.register_strategy("Long_Safe", LongTermValueStrategy(profile="Balanced", rebalance_freq=21))
+
     # 시장 데이터 로드
     tickers = db.query_dataframe(
         "SELECT DISTINCT ticker FROM stock_daily"
