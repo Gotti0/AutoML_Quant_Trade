@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AlgorithmModel, RegimeProbability } from '../types';
+import { AlgorithmModel, RegimeProbability, PipelineLog, PipelineCommand, PipelineStatus } from '../types';
 
 // Use an environment variable for the base URL in a real app
 const API_BASE_URL = 'http://localhost:8000/api/v1';
@@ -29,6 +29,41 @@ export const fetchDashboardData = async (): Promise<DashboardResponse> => {
 export const fetchRegimeHistory = async (): Promise<RegimeProbability[]> => {
     const response = await apiClient.get('/regime/history');
     return response.data;
+};
+
+// ── Pipeline API ──
+
+export const startPipeline = async (command: string): Promise<{ taskId: string; command: string; status: string }> => {
+    const response = await apiClient.post('/pipeline/run', null, { params: { command } });
+    return response.data;
+};
+
+export const fetchPipelineStatus = async (): Promise<PipelineStatus> => {
+    const response = await apiClient.get<PipelineStatus>('/pipeline/status');
+    return response.data;
+};
+
+export const fetchPipelineCommands = async (): Promise<PipelineCommand[]> => {
+    const response = await apiClient.get<{ commands: PipelineCommand[] }>('/pipeline/commands');
+    return response.data.commands;
+};
+
+export const subscribePipelineLogs = (
+    taskId: string,
+    onLog: (log: PipelineLog) => void,
+    onComplete: (result: { status: string; error: string | null }) => void,
+): (() => void) => {
+    const es = new EventSource(`${API_BASE_URL}/pipeline/logs/${taskId}`);
+    es.onmessage = (e) => onLog(JSON.parse(e.data));
+    es.addEventListener('complete', (e: Event) => {
+        const me = e as MessageEvent;
+        onComplete(JSON.parse(me.data));
+        es.close();
+    });
+    es.onerror = () => {
+        es.close(); // 자동 재연결 방지 (OOM 위험 제거)
+    };
+    return () => es.close();
 };
 
 // Add fallback mock data generation for testing UI without backend
@@ -88,3 +123,4 @@ if (import.meta.env.VITE_USE_MOCK_DATA === 'true') {
         }
     );
 }
+

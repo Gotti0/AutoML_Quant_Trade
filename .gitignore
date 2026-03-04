@@ -11,3 +11,4 @@ cache_nasdaq/
 tests/
 venv_32/
 cache_daishin/
+frontend/.vscode/

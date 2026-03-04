@@ -1,7 +1,10 @@
+import asyncio
 import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from backend.api import routes
+from backend.api import pipeline_routes
 
 logger = logging.getLogger(__name__)
 
@@ -25,8 +28,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include the main router
+# Include routers
 app.include_router(routes.router, prefix="/api/v1")
+app.include_router(pipeline_routes.router, prefix="/api/v1")
+
+
+@app.on_event("startup")
+async def startup():
+    """서버 시작 시 PipelineManager 초기화 (이벤트 루프 확정 후)"""
+    from backend.api.pipeline_manager import PipelineManager
+    loop = asyncio.get_running_loop()
+    app.state.pipeline_manager = PipelineManager(loop=loop)
+    logger.info("PipelineManager initialized")
+
 
 @app.get("/")
 def read_root():

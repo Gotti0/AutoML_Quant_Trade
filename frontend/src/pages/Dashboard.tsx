@@ -3,6 +3,7 @@ import { useDashboardStore } from '../store/useDashboardStore';
 import { fetchDashboardData } from '../services/api';
 import { AlgorithmCard } from '../components/AlgorithmCard';
 import { RegimeWidget } from '../components/RegimeWidget';
+import { PipelinePanel } from '../components/PipelinePanel';
 import { Activity, LayoutDashboard, RefreshCcw } from 'lucide-react';
 
 export const Dashboard: React.FC = () => {
@@ -58,6 +59,11 @@ export const Dashboard: React.FC = () => {
                         <p>Error: {error}</p>
                     </div>
                 )}
+
+                {/* Pipeline Control Panel */}
+                <section>
+                    <PipelinePanel />
+                </section>
 
                 {/* Top Section: Regime Status & Portfolio Overview */}
                 <section className="grid grid-cols-1 lg:grid-cols-3 gap-6">

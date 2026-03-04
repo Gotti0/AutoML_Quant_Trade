@@ -28,3 +28,26 @@ export interface RegimeProbability {
     };
     dominantRegime: string;
 }
+
+// ── Pipeline 타입 ──
+
+export interface PipelineLog {
+    level: string;
+    message: string;
+    timestamp: number;
+    logger: string;
+}
+
+export interface PipelineStatus {
+    status: 'idle' | 'running' | 'completed' | 'failed';
+    taskId: string | null;
+    command: string | null;
+    startedAt: string | null;
+    error: string | null;
+}
+
+export interface PipelineCommand {
+    command: string;
+    description: string;
+}
+
