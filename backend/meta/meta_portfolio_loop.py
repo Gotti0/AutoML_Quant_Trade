@@ -41,16 +41,17 @@ class MetaPortfolioLoop(BacktestEventLoop):
         allocator: CapitalAllocator = None,
         global_risk_manager: GlobalRiskManager = None,
         scheduler: RebalancingScheduler = None,
+        precomputed_regimes: Dict[int, np.ndarray] = None,
     ):
         super().__init__(ledger, transaction_model)
         self.regime_model = regime_model
         self.allocator = allocator or CapitalAllocator()
         self.grm = global_risk_manager or GlobalRiskManager()
         self.scheduler = scheduler or RebalancingScheduler(allocator=self.allocator)
-        self.fe = FeatureEngineer()
-
-        # 가격 이력 누적 버퍼 (피처 추출용)
-        self._price_history: Dict[str, list] = {}
+        
+        # O(1) 조회를 위한 사전 계산된 국면 사전
+        self.precomputed_regimes = precomputed_regimes or {}
+        
         self._last_regime_probs: Optional[np.ndarray] = None
 
     def run(self, market_data: Dict[str, pd.DataFrame],
@@ -79,18 +80,6 @@ class MetaPortfolioLoop(BacktestEventLoop):
             # 현재 가격 갱신
             self.current_prices[event.ticker] = event.close
 
-            # ─── 가격 이력 누적 ───
-            if event.ticker not in self._price_history:
-                self._price_history[event.ticker] = []
-            self._price_history[event.ticker].append({
-                "date": event.timestamp,
-                "open": event.open,
-                "high": event.high,
-                "low": event.low,
-                "close": event.close,
-                "volume": event.volume,
-            })
-
             # ─── 글로벌 리스크 체크 ───
             risk_status = self.grm.check_portfolio_risk(
                 self.ledger, self.current_prices
@@ -117,7 +106,7 @@ class MetaPortfolioLoop(BacktestEventLoop):
             # 에퀴티 스냅샷
             self.ledger.record_equity(event.timestamp, self.current_prices)
 
-            if event_count % 1000 == 0:
+            if event_count % 10000 == 0:
                 logger.info(f"  Progress: {event_count}/{total_events}")
 
         # 결과
@@ -137,14 +126,12 @@ class MetaPortfolioLoop(BacktestEventLoop):
 
     def _meta_step(self, event):
         """
-        메타 레이어 처리: HMM 국면 추론 → 리밸런싱 판단 → 실행.
-        HMM 모델이 주입되지 않은 경우 균등 확률로 폴백한다.
+        메타 레이어 처리: 사전 계산된 HMM 국면 조회 → 리밸런싱 판단 → 실행.
         """
-        # HMM 국면 추론
-        regime_probs = self._infer_regime(event.ticker)
-
-        if regime_probs is None:
-            return  # 데이터 부족
+        # HMM 국면 모델 O(1) 메모리 참조
+        n = self.allocator.n_regimes
+        default_probs = np.ones(n) / n
+        regime_probs = self.precomputed_regimes.get(event.timestamp, default_probs)
 
         self._last_regime_probs = regime_probs
 
@@ -161,36 +148,6 @@ class MetaPortfolioLoop(BacktestEventLoop):
             )
         else:
             self.scheduler.update_regime(regime_probs)
-
-    def _infer_regime(self, ticker: str) -> Optional[np.ndarray]:
-        """
-        현재까지 누적된 가격 이력으로 HMM 국면 확률 벡터를 추론.
-        RegimeHMM 모델이 없으면 균등 확률([0.33, 0.33, 0.34])을 반환.
-        """
-        history = self._price_history.get(ticker)
-        if history is None or len(history) < 65:
-            # 최소 65일 이상 데이터가 있어야 피처 추출 가능
-            return None
-
-        if self.regime_model is None:
-            # 모델이 없으면 균등 확률 폴백
-            n = self.allocator.n_regimes
-            return np.ones(n) / n
-
-        # 피처 추출
-        df = pd.DataFrame(history)
-        features = self.fe.extract(df)
-        if features.empty:
-            return None
-
-        # 마지막 시점의 확률만 사용
-        try:
-            proba = self.regime_model.predict_proba(features)
-            return proba[-1]  # shape=(n_regimes,)
-        except Exception as e:
-            logger.warning(f"Regime inference error: {e}")
-            n = self.allocator.n_regimes
-            return np.ones(n) / n
 
     @property
     def last_regime_probs(self) -> Optional[np.ndarray]:

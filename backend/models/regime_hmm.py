@@ -19,6 +19,7 @@ from sklearn.decomposition import PCA
 from hmmlearn.hmm import GaussianHMM
 
 from backend.config.settings import Settings
+from backend.models.pytorch_hmm import TorchGaussianHMM
 
 logger = logging.getLogger(__name__)
 
@@ -60,19 +61,28 @@ class RegimeHMM:
         X_scaled = self.scaler.fit_transform(X)
         X_pca = self.pca.fit_transform(X_scaled)
 
-        n_components = self.pca.n_components_
+        n_components_pca = self.pca.n_components_
         logger.info(
-            f"HMM PCA: {X.shape[1]} → {n_components} components "
+            f"HMM PCA: {X.shape[1]} → {n_components_pca} components "
             f"(variance: {sum(self.pca.explained_variance_ratio_):.3f})"
         )
 
-        # Gaussian HMM 학습
-        self.model = GaussianHMM(
-            n_components=self.n_regimes,
-            covariance_type="full",
-            n_iter=n_iter,
-            random_state=self.random_state,
-        )
+        use_pytorch = getattr(Settings, 'USE_PYTORCH_HMM', True)
+        if use_pytorch:
+            self.model = TorchGaussianHMM(
+                n_components=self.n_regimes,
+                n_features=n_components_pca,
+                n_iter=n_iter,
+                random_state=self.random_state,
+            )
+        else:
+            self.model = GaussianHMM(
+                n_components=self.n_regimes,
+                covariance_type="full",
+                n_iter=n_iter,
+                random_state=self.random_state,
+            )
+            
         self.model.fit(X_pca)
 
         self._is_fitted = True
@@ -174,12 +184,21 @@ class RegimeHMM:
         X_scaled = self.scaler.fit_transform(X)
         X_pca = self.pca.fit_transform(X_scaled)
 
-        self.model = GaussianHMM(
-            n_components=self.n_regimes,
-            covariance_type="full",
-            n_iter=50,  # Walk-Forward에서는 빠른 수렴 우선
-            random_state=self.random_state,
-        )
+        use_pytorch = getattr(Settings, 'USE_PYTORCH_HMM', True)
+        if use_pytorch:
+            self.model = TorchGaussianHMM(
+                n_components=self.n_regimes,
+                n_features=X_pca.shape[1],
+                n_iter=50,
+                random_state=self.random_state,
+            )
+        else:
+            self.model = GaussianHMM(
+                n_components=self.n_regimes,
+                covariance_type="full",
+                n_iter=50,  # Walk-Forward에서는 빠른 수렴 우선
+                random_state=self.random_state,
+            )
         self.model.fit(X_pca)
         self._is_fitted = True
 

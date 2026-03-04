@@ -112,7 +112,8 @@ class BacktestEventLoop:
                 order = self._signal_to_order(signal, account)
                 if order is not None:
                     fill = self.tx_model.simulate_fill(order, current_event)
-                    self.ledger.process_fill(engine_name, fill)
+                    if fill is not None:
+                        self.ledger.process_fill(engine_name, fill)
             else:
                 remaining.append((engine_name, signal))
 

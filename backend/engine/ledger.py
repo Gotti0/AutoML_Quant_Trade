@@ -36,6 +36,7 @@ class SubEngineAccount:
     def process_fill(self, fill: FillEvent):
         """
         체결 이벤트를 반영하여 포지션·현금 갱신.
+        부분 체결을 지원하여 캐시가 마이너스가 되는 현상을 방지함.
 
         Parameters:
             fill: FillEvent (qty 양수=매수, 음수=매도)
@@ -46,7 +47,38 @@ class SubEngineAccount:
 
         if fill.qty > 0:
             # 매수: 현금 감소, 포지션 증가
-            cost = fill.qty * fill.execution_price + fill.fee
+            # 1. 시도할 총 비용 연산
+            attempt_cost = fill.qty * fill.execution_price + fill.fee
+            
+            # 2. 캐시 부족 시 안전장치 (부분 체결)
+            if attempt_cost > self.cash:
+                # 보수적으로 수수료 무시하고 단가로 몇 주 살 수 있는지 체크
+                max_affordable_qty = int(self.cash / fill.execution_price)
+                if max_affordable_qty <= 0:
+                    logger.warning(f"[{self.name}] 체결 거부: {ticker} 매수 대금 부족 (필요: {attempt_cost:,.0f}, 보유: {self.cash:,.0f})")
+                    return # 캐시가 아예 부족하면 체결 전체 취소
+                
+                # 수량 강제 조정 및 필요 비용 재산출 (비율에 맞춰 수수료 단순 삭감)
+                fee_ratio = fill.fee / attempt_cost
+                new_qty = max_affordable_qty
+                new_fee = fill.fee * (new_qty / fill.qty)
+                cost = new_qty * fill.execution_price + new_fee
+                
+                # 그래도 오차로 초과하면 추가 삭감
+                while cost > self.cash and new_qty > 0:
+                    new_qty -= 1
+                    new_fee = fill.fee * (new_qty / fill.qty)
+                    cost = new_qty * fill.execution_price + new_fee
+                
+                if new_qty <= 0:
+                    return
+                    
+                logger.warning(f"[{self.name}] 부분 체결: {ticker} 수량 조정 ({fill.qty} -> {new_qty}) - 보유 원금 한계")
+                fill.qty = new_qty
+                fill.fee = new_fee
+            else:
+                cost = attempt_cost
+            
             self.cash -= cost
 
             # 평균 단가 갱신 (가중 평균)

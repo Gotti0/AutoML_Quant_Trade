@@ -198,17 +198,20 @@ def run_train_regime(db: DatabaseManager):
     from backend.models.regime_hmm import RegimeHMM
     from backend.data.macro_collector import MacroCollector
 
-    # 국내 대표 종목 또는 거시 지표 기반 피처 추출
+    # 국내 대표 종목(A069500: KOSPI 200) 및 거시 지표 기반 피처 추출
     fe = FeatureEngineer()
     price_df = db.query_dataframe(
         "SELECT date, open, high, low, close, volume FROM stock_daily "
-        "ORDER BY date"
+        "WHERE ticker = 'A069500' ORDER BY date"
     )
     if price_df.empty:
-        logger.error("No stock_daily data found. Run --collect first.")
+        logger.error("No stock_daily data found for benchmark (A069500).")
         return
 
-    features = fe.extract(price_df)
+    macro_df = db.query_dataframe("SELECT * FROM macro_daily ORDER BY date")
+    macro_wide = macro_df.pivot_table(index='date', columns='indicator', values='close').reset_index() if not macro_df.empty else None
+    
+    features = fe.extract(price_df, macro_wide)
     if features.empty:
         logger.error("Feature extraction produced empty results.")
         return
@@ -244,11 +247,88 @@ def run_backtest(db: DatabaseManager):
         logger.warning(f"Regime model not found, using uniform fallback: {e}")
         regime_model = None
 
+    # 시장 데이터 선행 로드 (국내 주식 + 해외 유니버스 모두)
+    from backend.data.asset_universe import AssetUniverseMapper
+    mapper = AssetUniverseMapper()
+    target_codes_overseas = mapper.get_codes_by_source("overseas")
+    target_codes_domestic_etf = mapper.get_codes_by_source("domestic")
+    
+    # KOSPI 일반 주식 중 최근 거래량이 어느정도 있는 종목만 필터링 (슬리피지 파산 방지)
+    all_domestic_tickers = db.query_dataframe(
+        "SELECT ticker FROM stock_daily GROUP BY ticker HAVING max(volume) >= 50000"
+    )["ticker"].tolist()
+    
+    all_domestic_targets = list(set(all_domestic_tickers + target_codes_domestic_etf))
+    
+    market_data = {}
+    
+    logger.info(f"Loading {len(all_domestic_targets)} domestic tickers into memory...")
+    for ticker in all_domestic_targets:
+        df = db.query_dataframe(
+            f"SELECT date, open, high, low, close, volume "
+            f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
+        )
+        if not df.empty:
+            market_data[ticker] = df
+
+    all_overseas_codes = db.query_dataframe(
+        "SELECT code FROM overseas_daily GROUP BY code HAVING max(volume) >= 10000"
+    )["code"].tolist()
+    
+    all_overseas_targets = list(set(all_overseas_codes + target_codes_overseas))
+    
+    logger.info(f"Loading {len(all_overseas_targets)} overseas codes into memory...")
+    for code in all_overseas_targets:
+        df = db.query_dataframe(
+            f"SELECT date, open, high, low, close, volume "
+            f"FROM overseas_daily WHERE code='{code}' ORDER BY date"
+        )
+        if not df.empty:
+            market_data[code] = df
+
+    if not market_data:
+        logger.error("No market data available. Run --collect first.")
+        return
+
+    # 거시지표 로드 및 Wide Form 변환 (HMM 피처용)
+    macro_data = db.query_dataframe(
+        "SELECT * FROM macro_daily ORDER BY date"
+    )
+    macro_wide = macro_data.pivot_table(index='date', columns='indicator', values='close').reset_index() if not macro_data.empty else None
+
+    # 🚀 성능 최적화: KOSPI 200 (A069500) 기준으로 국면을 루프 밖에서 1회 사전 계산
+    logger.info("Pre-computing HMM Regimes to optimize backtest speed...")
+    from backend.models.feature_engineer import FeatureEngineer
+    import numpy as np
+    
+    benchmark_ticker = "A069500" if "A069500" in market_data else (list(market_data.keys())[0] if market_data else None)
+    precomputed_regimes = {}
+
+    if benchmark_ticker and regime_model is not None:
+        fe = FeatureEngineer()
+        benchmark_df = market_data[benchmark_ticker]
+        
+        features_df = fe.extract(benchmark_df, macro_wide)
+        if not features_df.empty:
+            # 빠른 전 구간 HMM 예측 (Walk-Forward)
+            regime_pred_df = regime_model.walk_forward_predict(features_df, train_window=252, retrain_freq=21)
+            
+            # { timestamp: np.array([prob_0, prob_1, prob_2]) } 형태로 매핑
+            for _, row in regime_pred_df.iterrows():
+                ts = int(row["date"])
+                probs = np.array([row[f"prob_{i}"] for i in range(Settings.REGIME_COUNT)])
+                precomputed_regimes[ts] = probs
+            
+            logger.info(f"Pre-computed regimes for {len(precomputed_regimes)} dates using {benchmark_ticker}.")
+        else:
+            logger.warning("Feature extraction failed for benchmark. Regimes will fallback to uniform.")
+
     # 메타 포트폴리오 루프
     loop = MetaPortfolioLoop(
         ledger=ledger,
         transaction_model=TransactionModel(),
-        regime_model=regime_model,
+        regime_model=None, # 더 이상 루프 내에서 HMM 모델을 사용하지 않음
+        precomputed_regimes=precomputed_regimes # 새로 추가된 인자
     )
 
     # 전략 등록
@@ -269,16 +349,19 @@ def run_backtest(db: DatabaseManager):
     target_codes_overseas = mapper.get_codes_by_source("overseas")
     target_codes_domestic_etf = mapper.get_codes_by_source("domestic")
     
-    # 1. 일반 국내 주식 일부 (트렌드/스윙 테스트용)
-    domestic_tickers = db.query_dataframe(
-        "SELECT DISTINCT ticker FROM stock_daily LIMIT 10"
+    # KOSPI 일반 주식 중 최근 거래량이 어느정도 있는 종목만 필터링 (슬리피지 파산 방지)
+    # 서브쿼리를 사용하여 최대 거래량이 10000주 이상인 종목들만 대상으로 함
+    all_domestic_tickers = db.query_dataframe(
+        "SELECT ticker FROM stock_daily GROUP BY ticker HAVING max(volume) >= 50000"
     )["ticker"].tolist()
     
-    all_domestic_targets = list(set(domestic_tickers + target_codes_domestic_etf))
+    # 중복 제거 (ETF 포함)
+    all_domestic_targets = list(set(all_domestic_tickers + target_codes_domestic_etf))
     
     market_data = {}
     
-    # KOSPI 일반 주식 및 국내 상장 ETF 데이터 로드
+    # === 국내 데이터 로드 ===
+    logger.info(f"Loading {len(all_domestic_targets)} domestic tickers into memory...")
     for ticker in all_domestic_targets:
         df = db.query_dataframe(
             f"SELECT date, open, high, low, close, volume "
@@ -287,8 +370,16 @@ def run_backtest(db: DatabaseManager):
         if not df.empty:
             market_data[ticker] = df
 
-    # 2. 해외 자산 (장기 투자용) 데이터 로드
-    for code in target_codes_overseas:
+    # === 해외 자산 전체 데이터 로드 ===
+    # 해외 자산도 거래량이 어느 정도 있는 종목만 포섭
+    all_overseas_codes = db.query_dataframe(
+        "SELECT code FROM overseas_daily GROUP BY code HAVING max(volume) >= 10000"
+    )["code"].tolist()
+    
+    all_overseas_targets = list(set(all_overseas_codes + target_codes_overseas))
+    
+    logger.info(f"Loading {len(all_overseas_targets)} overseas codes into memory...")
+    for code in all_overseas_targets:
         df = db.query_dataframe(
             f"SELECT date, open, high, low, close, volume "
             f"FROM overseas_daily WHERE code='{code}' ORDER BY date"
