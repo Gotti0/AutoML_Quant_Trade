@@ -6,6 +6,7 @@ OverseasCollector를 활용하여 해외 지수·환율·원자재의 과거 일
 """
 import logging
 import time
+from datetime import datetime
 from typing import Dict
 
 import pandas as pd
@@ -90,13 +91,15 @@ class MacroCollector:
 
     def collect_update(self) -> int:
         """
-        증분 수집: 마지막 수집일 이후 데이터만 추가.
+        증분 수집: 마지막 수집일과 오늘 사이의 공백 일수를 계산하여
+        필요한 만큼만 최신 데이터를 추가 수집.
 
         Returns:
             수집 성공한 지표 수
         """
         success_count = 0
         skipped_count = 0
+        today = datetime.now()
 
         for indicator, code in self.MACRO_CODES.items():
             try:
@@ -106,7 +109,12 @@ class MacroCollector:
                     skipped_count += 1
                     continue
 
-                df = self.client.fetch_overseas_chart(code, count=30)
+                # 공백 일수 기반 동적 수집 건수 계산
+                last_dt = datetime.strptime(str(last_date), "%Y%m%d")
+                gap_days = (today - last_dt).days
+                fetch_count = max(30, min(gap_days + 10, Settings.DEFAULT_DAILY_COUNT))
+
+                df = self.client.fetch_overseas_chart(code, count=fetch_count)
                 time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:

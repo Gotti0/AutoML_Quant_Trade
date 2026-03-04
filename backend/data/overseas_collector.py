@@ -6,6 +6,7 @@ SQLite 데이터베이스에 저장.
 """
 import logging
 import time
+from datetime import datetime
 from typing import List
 
 from backend.config.settings import Settings
@@ -108,7 +109,8 @@ class OverseasCollector:
 
     def collect_update(self, codes: List[str]) -> int:
         """
-        증분 수집: 마지막 수집일 이후 데이터만 추가.
+        증분 수집: 마지막 수집일과 오늘 사이의 공백 일수를 계산하여
+        필요한 만큼만 최신 데이터를 추가 수집.
 
         Parameters:
             codes: 해외 코드 리스트
@@ -117,6 +119,7 @@ class OverseasCollector:
         """
         success_count = 0
         skipped_count = 0
+        today = datetime.now()
 
         for code in codes:
             try:
@@ -125,7 +128,12 @@ class OverseasCollector:
                     skipped_count += 1
                     continue
 
-                df = self.client.fetch_overseas_chart(code, count=30)
+                # 공백 일수 기반 동적 수집 건수 계산
+                last_dt = datetime.strptime(str(last_date), "%Y%m%d")
+                gap_days = (today - last_dt).days
+                fetch_count = max(30, min(gap_days + 10, Settings.DEFAULT_DAILY_COUNT))
+
+                df = self.client.fetch_overseas_chart(code, count=fetch_count)
                 time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:

@@ -6,6 +6,7 @@ BridgeClient를 통해 Cybos Plus StockChart 일봉/분봉 데이터를
 """
 import logging
 import time
+from datetime import datetime
 from typing import List, Optional
 
 from backend.config.settings import Settings
@@ -91,7 +92,9 @@ class StockCollector:
 
     def collect_daily_update(self, tickers: List[str]) -> int:
         """
-        증분 통용 수집: DB에 마지막 수집일이 있는 종목만 30일치 최신 데이터를 추가 수집.
+        증분 수집: DB의 마지막 수집일과 오늘 사이의 공백 일수를 계산하여
+        필요한 만큼만 최신 데이터를 추가 수집. 30일 이내면 30일,
+        그 이상이면 공백+10일(버퍼)만큼 수집.
 
         Parameters:
             tickers: 종목코드 리스트
@@ -100,6 +103,7 @@ class StockCollector:
         """
         success_count = 0
         skipped_count = 0
+        today = datetime.now()
 
         for ticker in tickers:
             try:
@@ -109,7 +113,14 @@ class StockCollector:
                     skipped_count += 1
                     continue
 
-                df = self.client.fetch_daily_ohlcv(ticker, count=30)
+                # 마지막 수집일 ~ 오늘 사이 공백 일수 계산
+                last_dt = datetime.strptime(str(last_date), "%Y%m%d")
+                gap_days = (today - last_dt).days
+
+                # 최소 30일, 공백이 크면 공백+10일(버퍼), 최대 DEFAULT_DAILY_COUNT
+                fetch_count = max(30, min(gap_days + 10, Settings.DEFAULT_DAILY_COUNT))
+
+                df = self.client.fetch_daily_ohlcv(ticker, count=fetch_count)
                 time.sleep(Settings.CYBOS_THROTTLE_WAIT)
 
                 if not df.empty:
