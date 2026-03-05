@@ -4,7 +4,7 @@ AutoML_Quant_Trade - 전략 기본 인터페이스
 모든 전략은 이 ABC를 상속하여 구현.
 """
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Dict, List, Optional
 
 from backend.engine.events import MarketEvent, SignalEvent
 
@@ -14,7 +14,8 @@ class BaseStrategy(ABC):
 
     def __init__(self, name: str = ""):
         self.name = name or self.__class__.__name__
-        self._history: list = []  # 과거 MarketEvent 축적
+        # BUG-1 FIX: 종목별 히스토리 분리 저장 (기존: 단일 list)
+        self._history: Dict[str, List[MarketEvent]] = {}
 
     @abstractmethod
     def on_market_data(self, event: MarketEvent) -> Optional[SignalEvent]:
@@ -38,17 +39,19 @@ class BaseStrategy(ABC):
         ...
 
     def _record(self, event: MarketEvent):
-        """내부 히스토리에 이벤트 추가."""
-        self._history.append(event)
+        """내부 히스토리에 종목별로 이벤트 추가."""
+        if event.ticker not in self._history:
+            self._history[event.ticker] = []
+        self._history[event.ticker].append(event)
 
-    def get_close_series(self) -> list:
-        """축적된 종가 리스트 반환."""
-        return [e.close for e in self._history]
+    def get_close_series(self, ticker: str) -> list:
+        """특정 종목의 축적된 종가 리스트 반환."""
+        return [e.close for e in self._history.get(ticker, [])]
 
-    def get_volume_series(self) -> list:
-        """축적된 거래량 리스트 반환."""
-        return [e.volume for e in self._history]
+    def get_volume_series(self, ticker: str) -> list:
+        """특정 종목의 축적된 거래량 리스트 반환."""
+        return [e.volume for e in self._history.get(ticker, [])]
 
     def reset(self):
         """히스토리 초기화."""
-        self._history = []
+        self._history = {}

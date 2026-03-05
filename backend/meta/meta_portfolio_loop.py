@@ -133,6 +133,16 @@ class MetaPortfolioLoop(BacktestEventLoop):
             self.ledger, self.current_prices
         )
         
+        # BUG-5 FIX: 서킷브레이커 발동 시 청산 시그널을 pending_signals에 주입
+        for sig_tuple in risk_status.get("liquidation_signals", []):
+            if isinstance(sig_tuple, tuple) and len(sig_tuple) == 2:
+                engine_name, signal = sig_tuple
+                signal.timestamp = timestamp  # 현재 timestamp로 설정
+                self._pending_signals.append((engine_name, signal))
+
+        # BUG-5 FIX: 쿨다운 기간 업데이트 (서킷브레이커 자동 해제)
+        self.grm.update_cooldown()
+        
         # 2. 서킷 브레이커가 아닐 때만 국면 추론 및 리밸런싱 판단
         if risk_status["status"] != "circuit_broken":
             self._meta_step(timestamp)

@@ -7,11 +7,12 @@ AutoML_Quant_Trade - 글로벌 리스크 관리자
   3. 긴급 대피(Emergency Evacuation) 로직
 """
 import logging
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import numpy as np
 
 from backend.config.settings import Settings
+from backend.engine.events import SignalEvent
 from backend.engine.ledger import MasterLedger
 
 logger = logging.getLogger(__name__)
@@ -37,6 +38,9 @@ class GlobalRiskManager:
         self._peak_nav: float = 0.0
         self._is_emergency: bool = False
         self._circuit_broken: bool = False
+        # BUG-5 FIX: 쿨다운 기간 (서킷브레이커 발동 후 5영업일 거래 금지)
+        self.cooldown_period: int = 5
+        self._days_since_broken: int = 0
 
     def check_portfolio_risk(self, ledger: MasterLedger,
                               market_prices: Dict[str, float]) -> Dict:
@@ -62,17 +66,22 @@ class GlobalRiskManager:
 
         # 서킷 브레이커
         if drawdown < -self.max_portfolio_drawdown:
+            liquidation_signals: List[SignalEvent] = []
             # 연속적인 로깅 방지: 이미 서킷브레이크 상태라면 로깅 안 함
             if not self._circuit_broken:
                 self._circuit_broken = True
+                self._days_since_broken = 0
                 logger.warning(
                     f"🚨 PORTFOLIO CIRCUIT BREAKER: "
                     f"drawdown {drawdown:.2%} < limit -{self.max_portfolio_drawdown:.2%}"
                 )
+                # BUG-5 FIX: 전 포지션 강제 청산 시그널 생성
+                liquidation_signals = self._generate_liquidation_signals(ledger)
             return {
                 "status": "circuit_broken",
                 "current_drawdown": drawdown,
                 "nav": nav,
+                "liquidation_signals": liquidation_signals,
             }
 
         # 경고 (한도의 70% 이상)
@@ -147,8 +156,37 @@ class GlobalRiskManager:
     def is_emergency(self) -> bool:
         return self._is_emergency
 
+    def update_cooldown(self):
+        """일 마감 시 호출: 쿨다운 카운터 증가 및 자동 해제."""
+        if self._circuit_broken:
+            self._days_since_broken += 1
+            if self._days_since_broken > self.cooldown_period:
+                self._circuit_broken = False
+                self._days_since_broken = 0
+                logger.info("🔓 Circuit breaker released after cooldown period.")
+
+    def _generate_liquidation_signals(self, ledger: MasterLedger) -> List[SignalEvent]:
+        """모든 서브 계정의 보유 포지션에 대해 강제 청산 시그널 생성."""
+        signals: List[SignalEvent] = []
+        for engine_name, account in ledger.sub_accounts.items():
+            for ticker, qty in account.positions.items():
+                if qty > 0:
+                    signals.append((
+                        engine_name,
+                        SignalEvent(
+                            timestamp=0,  # 루프에서 현재 timestamp로 덮어씌워짐
+                            ticker=ticker,
+                            direction="SELL",
+                            strength=1.0,
+                            strategy_name="CircuitBreaker",
+                        )
+                    ))
+        logger.warning(f"Generated {len(signals)} forced liquidation signals.")
+        return signals
+
     def reset(self):
         """상태 초기화."""
         self._peak_nav = 0.0
         self._is_emergency = False
         self._circuit_broken = False
+        self._days_since_broken = 0

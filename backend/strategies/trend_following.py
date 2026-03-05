@@ -3,7 +3,7 @@ AutoML_Quant_Trade - 중단기 트렌드 팔로잉 전략
 
 이중 이동평균선 교차(골든/데드 크로스) + 모멘텀 확인.
 """
-from typing import Optional
+from typing import Dict, Optional
 
 from backend.engine.events import MarketEvent, SignalEvent
 from backend.strategies.base_strategy import BaseStrategy
@@ -18,12 +18,14 @@ class TrendFollowing(BaseStrategy):
         self.fast_period = fast_period
         self.slow_period = slow_period
         self.momentum_period = momentum_period
-        self._prev_fast_above = None
+        # BUG-1 FIX: 종목별로 이전 크로스 상태 분리 추적
+        self._prev_fast_above: Dict[str, Optional[bool]] = {}
 
     def on_market_data(self, event: MarketEvent) -> Optional[SignalEvent]:
         self._record(event)
+        ticker = event.ticker
 
-        closes = self.get_close_series()
+        closes = self.get_close_series(ticker)
 
         # 워밍업
         if len(closes) < self.slow_period:
@@ -43,8 +45,10 @@ class TrendFollowing(BaseStrategy):
 
         signal = None
 
+        prev = self._prev_fast_above.get(ticker)
+
         # 골든 크로스: 단기 이평이 장기 이평 상향 돌파 + 양의 모멘텀
-        if self._prev_fast_above is False and fast_above and momentum > 0:
+        if prev is False and fast_above and momentum > 0:
             signal = SignalEvent(
                 timestamp=event.timestamp,
                 ticker=event.ticker,
@@ -54,7 +58,7 @@ class TrendFollowing(BaseStrategy):
             )
 
         # 데드 크로스: 단기 이평이 장기 이평 하향 돌파
-        elif self._prev_fast_above is True and not fast_above:
+        elif prev is True and not fast_above:
             signal = SignalEvent(
                 timestamp=event.timestamp,
                 ticker=event.ticker,
@@ -63,7 +67,7 @@ class TrendFollowing(BaseStrategy):
                 strategy_name=self.name,
             )
 
-        self._prev_fast_above = fast_above
+        self._prev_fast_above[ticker] = fast_above
 
         return signal
 

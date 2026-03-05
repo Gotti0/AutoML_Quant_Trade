@@ -66,6 +66,10 @@ class LongTermValueStrategy(BaseStrategy):
             self._bars_since_rebalance[ticker] = 0
             
             target_weight = self.target_weights.get(ticker, 0.0)
+
+            # BUG-3 FIX: 타겟 비중이 0인 종목은 시그널 무시 (수수료 누적 방지)
+            if target_weight == 0.0:
+                return None
             
             # EventLoop에게 "TARGET" direction을 보내 목표 비중 달성을 요청
             return SignalEvent(

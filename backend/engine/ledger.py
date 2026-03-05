@@ -93,6 +93,11 @@ class SubEngineAccount:
         else:
             # 매도: 현금 증가, 포지션 감소
             sell_qty = abs(fill.qty)
+            # BUG-2 FIX: 보유수량 초과 매도 방지 (음수 포지션 = 무차입 공매도 차단)
+            sell_qty = min(sell_qty, prev_qty)
+            if sell_qty <= 0:
+                return  # 보유량 없으면 체결 거부
+            
             proceeds = sell_qty * fill.execution_price - fill.fee
             self.cash += proceeds
             self.positions[ticker] = prev_qty - sell_qty
