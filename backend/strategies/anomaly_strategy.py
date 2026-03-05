@@ -52,7 +52,7 @@ class AnomalyStrategy(BaseStrategy):
         if ticker not in self._in_risk_off:
             self._in_risk_off[ticker] = False
 
-        history = self._histories.get(ticker, [])
+        history = self._history.get(ticker, [])
         if len(history) < self.lookback:
             return None
 
@@ -60,7 +60,11 @@ class AnomalyStrategy(BaseStrategy):
             from backend.models.feature_engineer import FeatureEngineer
             fe = FeatureEngineer()
 
-            price_df = pd.DataFrame(history)
+            price_df = pd.DataFrame([{
+                "date": e.timestamp,
+                "open": e.open, "high": e.high, "low": e.low,
+                "close": e.close, "volume": e.volume,
+            } for e in history])
             features = fe.extract(price_df)
 
             if features.empty:

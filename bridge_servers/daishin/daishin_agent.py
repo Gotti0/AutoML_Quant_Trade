@@ -361,3 +361,64 @@ class DaishinAgent:
             name = self.us_code.GetNameByUsCode(code)
             result.append({"code": code, "name": name or ""})
         return result
+
+    # ══════════════════════════════════════════
+    # 재무 데이터 (MarketEye 기본적분석)
+    # ══════════════════════════════════════════
+
+    def get_fundamentals_batch(self, tickers: List[str]) -> List[dict]:
+        """
+        MarketEye로 재무 데이터 일괄 조회.
+
+        MarketEye 필드 코드:
+            0  = 종목코드
+            4  = 종목명
+            10 = 현재가 (PBR 계산용)
+            67 = PER (주가수익비율)
+            70 = EPS (주당순이익)
+            74 = 배당수익률
+            75 = 부채비율
+            77 = ROE (자기자본이익률)
+            89 = BPS (주당순자산)
+
+        Parameters:
+            tickers: 종목코드 리스트 (최대 200개씩 청크 처리)
+        Returns:
+            List[dict] with keys: ticker, name, price, per, eps,
+                                  div_yield, debt_ratio, roe, bps
+        """
+        CHUNK_SIZE = 200
+        FIELDS = [0, 4, 10, 67, 70, 74, 75, 77, 89]
+        FIELD_NAMES = ["ticker", "name", "price", "per", "eps",
+                       "div_yield", "debt_ratio", "roe", "bps"]
+
+        result = []
+        for i in range(0, len(tickers), CHUNK_SIZE):
+            chunk = tickers[i:i + CHUNK_SIZE]
+            # MarketEye는 오름차순 정렬된 코드 목록을 권장
+            chunk_sorted = sorted(chunk)
+
+            self._wait_for_request()
+            self.market_eye.SetInputValue(0, FIELDS)
+            self.market_eye.SetInputValue(1, chunk_sorted)
+            self.market_eye.BlockRequest()
+
+            if self.market_eye.GetDibStatus() != 0:
+                logger.error(
+                    f"MarketEye fundamentals error: {self.market_eye.GetDibMsg1()}"
+                )
+                continue
+
+            count = self.market_eye.GetHeaderValue(2)
+            for j in range(count):
+                row = {}
+                for col_idx, name in enumerate(FIELD_NAMES):
+                    row[name] = self.market_eye.GetDataValue(col_idx, j)
+                result.append(row)
+
+            # 다음 청크 전 스로틀 대기
+            if i + CHUNK_SIZE < len(tickers):
+                self._wait_for_request()
+
+        logger.info(f"Retrieved fundamentals for {len(result)} stocks")
+        return result

@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { AlgorithmModel, RegimeProbability, PipelineLog, PipelineCommand, PipelineStatus } from '../types';
+import { AlgorithmModel, RegimeProbability, PipelineLog, PipelineCommand, PipelineStatus, ScreenerData } from '../types';
 
 // Use an environment variable for the base URL in a real app
 const API_BASE_URL = 'http://localhost:8000/api/v1';
@@ -55,6 +55,18 @@ export const clearSystemLogs = async (source?: string): Promise<{ status: string
 export const fetchRegimeHistory = async (): Promise<RegimeProbability[]> => {
     const response = await apiClient.get('/regime/history');
     return response.data;
+};
+
+export const fetchScreenerData = async (): Promise<ScreenerData> => {
+    try {
+        const response = await apiClient.get<ScreenerData>('/screener/latest');
+        return response.data;
+    } catch (error) {
+        let msg = 'Unknown error';
+        if (error instanceof Error) msg = error.message;
+        await sendClientLog('ERROR', `Screener fetch failed: ${msg}`);
+        throw error;
+    }
 };
 
 // ── Pipeline API ──

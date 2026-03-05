@@ -10,13 +10,16 @@ AutoML_Quant_Trade - 이벤트 기반 백테스팅 메인 루프
 """
 import logging
 from queue import PriorityQueue
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, TYPE_CHECKING
 
 import pandas as pd
 
 from backend.engine.events import MarketEvent, SignalEvent, OrderEvent, FillEvent
 from backend.engine.ledger import MasterLedger
 from backend.engine.transaction_model import TransactionModel
+
+if TYPE_CHECKING:
+    from backend.screener.screener_result import ScreenerResult
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +36,57 @@ class BacktestEventLoop:
         self.current_prices: Dict[str, float] = {}
         self._pending_signals: List[tuple] = []
 
+        # screener 연동
+        self._screener = None          # UnsupervisedScreener (선택)
+        self._screener_market_data: Optional[Dict] = None
+        self._screener_refresh_freq: int = 21  # 리밸런싱 주기 (거래일)
+        self._screener_day_counter: int = 0
+        self._last_screener_result: Optional["ScreenerResult"] = None
+
     def register_strategy(self, engine_name: str, strategy):
         """전략을 특정 서브 엔진에 등록."""
         if engine_name not in self.strategies:
             self.strategies[engine_name] = []
         self.strategies[engine_name].append(strategy)
         logger.info(f"Strategy '{strategy.__class__.__name__}' registered to '{engine_name}'")
+
+    def set_screener(self, screener, market_data: Dict,
+                     refresh_freq: int = 21) -> None:
+        """스크리너를 등록하여 리밸런싱 주기마다 자동 재실행.
+
+        Parameters:
+            screener: UnsupervisedScreener 인스턴스
+            market_data: {ticker: DataFrame} — screener.run()에 전달할 데이터
+            refresh_freq: 스크리너 재실행 주기 (거래일 수)
+        """
+        self._screener = screener
+        self._screener_market_data = market_data
+        self._screener_refresh_freq = refresh_freq
+        logger.info(
+            f"Screener registered. Will refresh every {refresh_freq} trading days."
+        )
+
+    def inject_screener_result(self, result: "ScreenerResult") -> None:
+        """스크리너 결과를 모든 전략에 즉시 주입.
+
+        `set_screener_result()` 메서드를 보유한 전략에만 적용된다.
+
+        Parameters:
+            result: ScreenerResult 인스턴스
+        """
+        self._last_screener_result = result
+        for strategy_list in self.strategies.values():
+            for strategy in strategy_list:
+                if hasattr(strategy, "set_screener_result"):
+                    strategy.set_screener_result(result)
+                elif hasattr(strategy, "set_target_clusters"):
+                    # ClusterMomentumStrategy: 군집 ID 리스트 주입
+                    cluster_ids = list(set(result.cluster_assignments.values()))
+                    strategy.set_target_clusters(cluster_ids)
+        logger.info(
+            f"ScreenerResult injected: regime={result.regime}, "
+            f"selected={len(result.selected_tickers)} tickers"
+        )
 
     def run(self, market_data: Dict[str, pd.DataFrame],
             timeframe: str = "daily") -> pd.DataFrame:
@@ -57,6 +105,8 @@ class BacktestEventLoop:
                      f"{len(market_data)} tickers")
 
         event_count = 0
+        # 날짜(YYYYMMDD) 단위 de-duplication을 위한 마지막 처리 날짜 추적
+        _last_date: int = -1
 
         while not pq.empty():
             _, _, event = pq.get()
@@ -64,6 +114,12 @@ class BacktestEventLoop:
 
             # 현재 가격 갱신
             self.current_prices[event.ticker] = event.close
+
+            # 새 거래일이 시작될 때 스크리너 재실행 카운터 증가
+            if event.timestamp != _last_date:
+                _last_date = event.timestamp
+                self._screener_day_counter += 1
+                self._maybe_refresh_screener()
 
             # 대기 시그널 체결 (이전 봉 시그널 → 현재 봉 시가)
             self._process_pending_signals(event)
@@ -92,6 +148,24 @@ class BacktestEventLoop:
             )
 
         return self.ledger.get_equity_curve()
+
+    def _maybe_refresh_screener(self) -> None:
+        """리밸런싱 주기 도래 시 스크리너를 재실행하고 결과를 전략에 주입."""
+        if self._screener is None:
+            return
+        if self._screener_day_counter % self._screener_refresh_freq != 0:
+            return
+
+        try:
+            tickers = list(self._screener_market_data.keys()) \
+                if self._screener_market_data else []
+            result = self._screener.run(
+                market_data=self._screener_market_data,
+                tickers=tickers,
+            )
+            self.inject_screener_result(result)
+        except Exception as e:
+            logger.warning(f"Screener refresh failed (will use previous result): {e}")
 
     def _process_pending_signals(self, current_event: MarketEvent):
         """

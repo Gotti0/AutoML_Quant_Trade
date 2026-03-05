@@ -111,6 +111,29 @@ class BridgeClient:
         data = self._post("/api/dostk/info_batch", json_data={"tickers": tickers})
         return data.get("data", [])
 
+    def fetch_fundamentals_batch(self, tickers: List[str]) -> pd.DataFrame:
+        """MarketEye API로 PER, EPS, ROE, 배당수익률, 부채비율, BPS 일괄 조회.
+
+        200개 청크 단위로 브릿지 서버에 POST 요청을 전송한다.
+        반환 DataFrame 컬럼: ticker, name, price, per, eps,
+                            div_yield, debt_ratio, roe, bps
+
+        Parameters:
+            tickers: 조회할 종목코드 리스트
+        Returns:
+            DataFrame (빈 경우 빈 DataFrame 반환)
+        """
+        EMPTY_COLS = ["ticker", "name", "price", "per", "eps",
+                      "div_yield", "debt_ratio", "roe", "bps"]
+        if not tickers:
+            return pd.DataFrame(columns=EMPTY_COLS)
+
+        data = self._post("/api/dostk/fundamentals", json_data={"tickers": tickers})
+        rows = data.get("data", [])
+        if not rows:
+            return pd.DataFrame(columns=EMPTY_COLS)
+        return pd.DataFrame(rows)
+
     # ══════════════════════════════════════════
     # 해외 주식/지수 데이터
     # ══════════════════════════════════════════

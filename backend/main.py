@@ -375,6 +375,18 @@ def run_backtest(db: DatabaseManager):
             cluster_analyzer.fit(multi_features)
             cluster_analyzer.save()
 
+    # 스크리너 구성 (백테스트 中 리밸런싱 주기마다 종목 풀 갱신)
+    from backend.screener.fundamental_scorer import FundamentalScorer
+    from backend.screener.screener import UnsupervisedScreener
+
+    screener = UnsupervisedScreener(
+        db=db,
+        cluster_analyzer=cluster_analyzer,
+        anomaly_detector=anomaly_model,
+        regime_model=regime_model or RegimeHMM(),
+        fundamental_scorer=FundamentalScorer(),  # BridgeClient 없으면 빈 재무 데이터
+    )
+
     # 전략 등록
     loop.register_strategy("Regime", RegimeAdaptiveStrategy(
         regime_model=regime_model or RegimeHMM(),
@@ -388,6 +400,17 @@ def run_backtest(db: DatabaseManager):
     loop.register_strategy("Long_Safe", LongTermValueStrategy(
         profile="Balanced", rebalance_freq=21,
     ))
+
+    # 스크리너 연동: 21 거래일마다 종목 풀 재계산 후 전략에 주입
+    screener_market_data = {
+        t: df for t, df in market_data.items()
+        if t.startswith("A")  # 국내 주식만 스크리너 대상
+    }
+    loop.set_screener(
+        screener=screener,
+        market_data=screener_market_data,
+        refresh_freq=21,
+    )
 
     # 시장 데이터 로드 (국내 주식 + 해외 유니버스 모두)
     from backend.data.asset_universe import AssetUniverseMapper

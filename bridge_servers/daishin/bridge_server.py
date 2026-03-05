@@ -107,6 +107,24 @@ async def get_stock_info_batch(req: BatchInfoRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/api/dostk/fundamentals")
+async def get_fundamentals_batch(req: BatchInfoRequest):
+    """MarketEye 재무 데이터 일괄 조회 (PER, EPS, ROE, 배당수익률, 부채비율, BPS).
+
+    200개 청크 분할 처리. 필드: [0, 4, 10, 67, 70, 74, 75, 77, 89]
+    """
+    _check_connection()
+    formatted_codes = [_format_code(t) for t in req.tickers]
+    logger.info(f"Fundamentals batch request: {len(formatted_codes)} stocks")
+
+    try:
+        data = agent.get_fundamentals_batch(formatted_codes)
+        return JSONResponse(content={"status": "success", "data": data})
+    except Exception as e:
+        logger.error(f"Error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/dostk/universe")
 async def get_universe():
     """KOSPI + KOSDAQ 전체 종목 코드 목록."""

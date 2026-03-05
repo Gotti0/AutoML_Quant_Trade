@@ -50,3 +50,23 @@ def get_regime_history():
     """
     return []
 
+
+@router.get("/screener/latest", response_model=Dict[str, Any])
+def get_screener_latest():
+    """최신 스크리너 결과 반환 (cache_daishin/latest_screener.json)."""
+    try:
+        cache_path = Path("cache_daishin") / "latest_screener.json"
+        if cache_path.exists():
+            with open(cache_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        else:
+            return {
+                "timestamp": "",
+                "regime": "Unknown",
+                "regimeProbs": {"Bull": 0.33, "Bear": 0.33, "Crash": 0.34},
+                "stocks": [],
+            }
+    except Exception as e:
+        logger.error(f"Failed to fetch screener data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+

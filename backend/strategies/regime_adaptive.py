@@ -63,7 +63,7 @@ class RegimeAdaptiveStrategy(BaseStrategy):
         self._day_counter[ticker] += 1
 
         # 워밍업: 충분한 히스토리 필요
-        history = self._histories.get(ticker, [])
+        history = self._history.get(ticker, [])
         if len(history) < 63:
             return None
 
@@ -76,7 +76,11 @@ class RegimeAdaptiveStrategy(BaseStrategy):
             from backend.models.feature_engineer import FeatureEngineer
             fe = FeatureEngineer()
 
-            price_df = pd.DataFrame(history)
+            price_df = pd.DataFrame([{
+                "date": e.timestamp,
+                "open": e.open, "high": e.high, "low": e.low,
+                "close": e.close, "volume": e.volume,
+            } for e in history])
             features = fe.extract(price_df)
 
             if features.empty:

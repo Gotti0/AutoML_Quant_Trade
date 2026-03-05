@@ -3,12 +3,17 @@ AutoML_Quant_Trade - 장기 가치투자 전략 (6단계 포트폴리오 기반)
 
 AssetUniverseMapper의 6단계 리스크 프로필을 바탕으로
 지정된 리밸런싱 주기마다 타겟 비중을 달성하기 위한 시그널 생성.
+
+스크리너 연동: set_screener_result()로 종목 풀을 동적 교체 가능.
 """
-from typing import Optional, Dict
+from typing import Optional, Dict, List, TYPE_CHECKING
 
 from backend.engine.events import MarketEvent, SignalEvent
 from backend.strategies.base_strategy import BaseStrategy
 from backend.data.asset_universe import AssetUniverseMapper
+
+if TYPE_CHECKING:
+    from backend.screener.screener_result import ScreenerResult
 
 
 class LongTermValueStrategy(BaseStrategy):
@@ -28,6 +33,9 @@ class LongTermValueStrategy(BaseStrategy):
         
         # ticker별 경과 시간(봉) 추적
         self._bars_since_rebalance: Dict[str, int] = {}
+
+        # 스크리너 결과로부터 주입된 동적 종목 풀 (None=AssetUniverseMapper 사용)
+        self._screener_tickers: Optional[List[str]] = None
         
     def _calculate_target_weights(self) -> Dict[str, float]:
         """자산군 비중을 구체적 종목(ticker) 비중으로 매핑"""
@@ -50,6 +58,26 @@ class LongTermValueStrategy(BaseStrategy):
         
         resolved = self.mapper.resolve_to_codes(allocation)
         self.target_weights = {code: info["weight"] for code, info in resolved.items()}
+
+    def set_screener_result(self, result: "ScreenerResult") -> None:
+        """스크리너 결과를 주입하여 종목 풀을 동적으로 교체.
+
+        스크리너가 추천한 selected_tickers를 균등 비중으로 배분한다.
+        스크리너 결과를 받으면 AssetUniverseMapper 기반 target_weights를 덮어쓴다.
+
+        Parameters:
+            result: UnsupervisedScreener.run()이 반환한 ScreenerResult
+        """
+        if not result.selected_tickers:
+            return
+
+        self._screener_tickers = list(result.selected_tickers)
+        equal_weight = 1.0 / len(self._screener_tickers)
+        self.target_weights = {t: equal_weight for t in self._screener_tickers}
+        # 리밸런싱 카운터 리셋 → 다음 봉에서 즉시 리밸런싱 트리거
+        self._bars_since_rebalance = {
+            t: self.rebalance_freq for t in self._screener_tickers
+        }
 
     def on_market_data(self, event: MarketEvent) -> Optional[SignalEvent]:
         self._record(event)

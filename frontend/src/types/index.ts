@@ -29,6 +29,34 @@ export interface RegimeProbability {
     dominantRegime: string;
 }
 
+// ── Screener 타입 ──
+
+export interface ScreenerStock {
+    ticker: string;
+    name: string;
+    clusterId: number;
+    techScore: number;
+    fundScore: number;
+    totalScore: number;
+    tier: 'A' | 'B' | 'C' | 'D' | 'F';
+    isAnomaly: boolean;
+    fundamentals: {
+        per: number;
+        roe: number;
+        dividendYield: number;
+        debtRatio: number;
+        pbr: number;
+        eps: number;
+    };
+}
+
+export interface ScreenerData {
+    timestamp: string;
+    regime: string;
+    regimeProbs: { Bull: number; Bear: number; Crash: number };
+    stocks: ScreenerStock[];
+}
+
 // ── Pipeline 타입 ──
 
 export interface PipelineLog {
