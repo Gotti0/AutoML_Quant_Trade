@@ -93,6 +93,34 @@ class FeatureEngineer:
         else:
             df["trend_signal"] = 0.0
 
+        # ── 분포 특성 피처 (비지도학습 최적화) ──
+
+        # 수익률 왜도 (비대칭성: 좌 꼬리 = 급락 위험)
+        df["skewness_21d"] = df["return_1d"].rolling(
+            window=21, min_periods=21
+        ).skew()
+
+        # 수익률 첨도 (팻테일 정도: 높을수록 극단적 변동)
+        df["kurtosis_21d"] = df["return_1d"].rolling(
+            window=21, min_periods=21
+        ).kurt()
+
+        # 허스트 지수 (>0.5: 추세 지속, <0.5: 평균 회귀, =0.5: 랜덤워크)
+        df["hurst_exponent"] = df["close"].rolling(
+            window=63, min_periods=63
+        ).apply(self._compute_hurst_exponent, raw=True)
+
+        # 수익률 정보 엔트로피 (불확실성: 높을수록 예측 곤란)
+        df["entropy_21d"] = df["return_1d"].rolling(
+            window=21, min_periods=21
+        ).apply(self._compute_entropy, raw=True)
+
+        # 자기상관 계수 (lag 1~5: 시장 효율성 측정)
+        for lag in range(1, 6):
+            df[f"autocorr_lag{lag}"] = df["return_1d"].rolling(
+                window=63, min_periods=63
+            ).apply(lambda x: pd.Series(x).autocorr(lag=lag), raw=False)
+
         # ── 거시지표 병합 (가용 시) ──
         if macro_df is not None and not macro_df.empty:
             df = self._merge_macro(df, macro_df)
@@ -108,6 +136,11 @@ class FeatureEngineer:
             "mdd_63d",
             "volume_ratio",
             "momentum_score", "trend_signal",
+            # 분포 특성 피처
+            "skewness_21d", "kurtosis_21d",
+            "hurst_exponent", "entropy_21d",
+            "autocorr_lag1", "autocorr_lag2", "autocorr_lag3",
+            "autocorr_lag4", "autocorr_lag5",
         ]
 
         # 거시지표 컬럼이 추가되었으면 포함
@@ -126,6 +159,65 @@ class FeatureEngineer:
         )
 
         return result
+
+    @staticmethod
+    def _compute_hurst_exponent(prices: np.ndarray) -> float:
+        """
+        Rescaled Range (R/S) 방법으로 허스트 지수 추정.
+        >0.5: 추세 지속, <0.5: 평균 회귀, =0.5: 랜덤워크
+        """
+        if len(prices) < 20:
+            return 0.5
+
+        returns = np.diff(np.log(prices + 1e-10))
+        n = len(returns)
+
+        max_k = min(n // 2, 32)
+        if max_k < 4:
+            return 0.5
+
+        rs_list = []
+        ns_list = []
+
+        for k in range(4, max_k + 1):
+            n_chunks = n // k
+            if n_chunks < 1:
+                continue
+
+            rs_vals = []
+            for i in range(n_chunks):
+                chunk = returns[i * k:(i + 1) * k]
+                mean_chunk = chunk.mean()
+                cumdev = np.cumsum(chunk - mean_chunk)
+                R = cumdev.max() - cumdev.min()
+                S = chunk.std(ddof=1)
+                if S > 1e-10:
+                    rs_vals.append(R / S)
+
+            if rs_vals:
+                rs_list.append(np.log(np.mean(rs_vals)))
+                ns_list.append(np.log(k))
+
+        if len(ns_list) < 2:
+            return 0.5
+
+        # 선형 회귀로 기울기 = H
+        coeffs = np.polyfit(ns_list, rs_list, 1)
+        return float(np.clip(coeffs[0], 0.0, 1.0))
+
+    @staticmethod
+    def _compute_entropy(returns: np.ndarray) -> float:
+        """
+        수익률 분포의 정보 엔트로피 (Shannon Entropy).
+        """
+        if len(returns) < 5:
+            return 0.0
+
+        # 히스토그램 기반 이산 확률 분포
+        hist, _ = np.histogram(returns, bins=10, density=True)
+        hist = hist[hist > 0]  # 0인 빈 제거
+        probs = hist / hist.sum()
+        return float(-np.sum(probs * np.log2(probs + 1e-10)))
 
     def _compute_rsi(self, series: pd.Series, period: int = 14) -> pd.Series:
         """

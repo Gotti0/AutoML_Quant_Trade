@@ -54,7 +54,6 @@ class Settings:
 
     # ── 리스크 관리 ──
     ENGINE_LOSS_LIMITS = {
-        "MidFreq": 0.05,            # 중빈도 엔진 MDD 한도 5%
         "Swing": 0.10,              # 스윙 엔진 MDD 한도 10%
         "MidShort": 0.15,           # 중단기 엔진 MDD 한도 15%
         "Long_Safe": 0.20,          # 장기 안전자산 MDD 한도 20%

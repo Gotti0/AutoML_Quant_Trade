@@ -20,10 +20,9 @@ class CapitalAllocator:
     # 국면별 타깃 가중치 W* ─ 각 엔진이 각 국면에서 받는 자본 비중
     # 행: 엔진, 열: [Bull, Bear, Crash]
     W_STAR: Dict[str, List[float]] = {
-        "MidFreq":   [0.15, 0.25, 0.10],  # 중빈도: 변동성 높으면 활발
-        "Swing":     [0.35, 0.15, 0.00],  # 스윙: 강세장에서 활발, 폭락시 비활성
-        "MidShort":  [0.35, 0.15, 0.10],  # 중단기: 트렌드 활용
-        "Long_Safe": [0.15, 0.45, 0.80],  # 장기 안전: 약세/폭락 시 방어
+        "Swing":     [0.40, 0.20, 0.00],  # 스윙: 강세장에서 활발, 폭락시 비활성
+        "MidShort":  [0.40, 0.25, 0.15],  # 중단기: 트렌드 활용
+        "Long_Safe": [0.20, 0.55, 0.85],  # 장기 안전: 약세/폭락 시 방어
     }
 
     def __init__(self, w_star: Dict[str, List[float]] = None,
@@ -84,7 +83,7 @@ class CapitalAllocator:
             regime_probs: γ(t) 벡터, shape=(n_regimes,), 합=1.0
                           예: [0.7, 0.2, 0.1] → 70% Bull, 20% Bear, 10% Crash
         Returns:
-            엔진별 비중: {"MidFreq": 0.18, "Swing": 0.28, ...}
+            엔진별 비중: {"Swing": 0.35, "MidShort": 0.35, ...}
         """
         if len(regime_probs) != self.n_regimes:
             raise ValueError(

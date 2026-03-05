@@ -11,6 +11,7 @@ Usage:
     python -m backend.main --collect-overseas   # 해외 자산만 수집
     python -m backend.main --train-regime      # 국면 모델 학습 (Phase 2)
     python -m backend.main --backtest          # 백테스팅 실행 (Phase 3)
+    python -m backend.main --screen            # 스크리너 단독 실행
     python -m backend.main --server            # 대시보드 백엔드 구동 (FastAPI)
 """
 import argparse
@@ -232,10 +233,10 @@ def run_backtest(db: DatabaseManager):
 
     # 원장 세팅
     ledger = MasterLedger(initial_capital=Settings.INITIAL_CAPITAL)
-    ledger.create_sub_account("MidFreq", 0.15)
-    ledger.create_sub_account("Swing", 0.35)
-    ledger.create_sub_account("MidShort", 0.35)
-    ledger.create_sub_account("Long_Safe", 0.15)
+    ledger.create_sub_account("Regime", 0.30)
+    ledger.create_sub_account("Anomaly", 0.25)
+    ledger.create_sub_account("Cluster", 0.25)
+    ledger.create_sub_account("Long_Safe", 0.20)
 
     # HMM 모델 로드 (학습 완료된 경우)
     regime_model = None
@@ -331,17 +332,62 @@ def run_backtest(db: DatabaseManager):
         precomputed_regimes=precomputed_regimes # 새로 추가된 인자
     )
 
-    # 전략 등록
-    from backend.strategies.trend_following import TrendFollowing
+    # 전략 등록 (비지도학습 기반)
+    from backend.strategies.regime_adaptive import RegimeAdaptiveStrategy
+    from backend.strategies.anomaly_strategy import AnomalyStrategy
+    from backend.strategies.cluster_momentum import ClusterMomentumStrategy
     from backend.strategies.long_term_value import LongTermValueStrategy
-    from backend.strategies.mid_freq_scalping import MidFreqScalping
-    from backend.strategies.swing_mean_reversion import SwingMeanReversion
+    from backend.models.anomaly_detector import AnomalyDetector
+    from backend.models.cluster_analyzer import CrossAssetClusterAnalyzer
+
+    # Anomaly Detector & Cluster Analyzer 학습
+    anomaly_model = AnomalyDetector()
+    cluster_analyzer = CrossAssetClusterAnalyzer()
+
+    try:
+        anomaly_model.load()
+        logger.info("AnomalyDetector loaded.")
+    except Exception:
+        logger.info("AnomalyDetector not found. Training...")
+        benchmark_features = None
+        if benchmark_ticker:
+            fe = FeatureEngineer()
+            benchmark_features = fe.extract(market_data[benchmark_ticker], macro_wide)
+        if benchmark_features is not None and not benchmark_features.empty:
+            anomaly_model.fit(benchmark_features)
+            anomaly_model.save()
+
+    try:
+        cluster_analyzer.load()
+        logger.info("ClusterAnalyzer loaded.")
+    except Exception:
+        logger.info("ClusterAnalyzer not found. Training...")
+        fe = FeatureEngineer()
+        multi_features = {}
+        for t, pdf in list(market_data.items())[:200]:  # 상위 200개 종목으로 제한
+            try:
+                ft = fe.extract(pdf)
+                if not ft.empty and len(ft) >= 20:
+                    multi_features[t] = ft
+            except Exception:
+                continue
+        if len(multi_features) >= 10:
+            cluster_analyzer.fit(multi_features)
+            cluster_analyzer.save()
 
     # 전략 등록
-    loop.register_strategy("MidFreq", MidFreqScalping(rsi_period=14, oversold=30, overbought=70, vol_spike_ratio=2.0))
-    loop.register_strategy("Swing", TrendFollowing(fast_period=20, slow_period=50))
-    loop.register_strategy("MidShort", SwingMeanReversion(bb_period=20, bb_std=2.0, entry_z=-2.0, exit_z=0.0))
-    loop.register_strategy("Long_Safe", LongTermValueStrategy(profile="Balanced", rebalance_freq=21))
+    loop.register_strategy("Regime", RegimeAdaptiveStrategy(
+        regime_model=regime_model or RegimeHMM(),
+    ))
+    loop.register_strategy("Anomaly", AnomalyStrategy(
+        anomaly_detector=anomaly_model,
+    ))
+    loop.register_strategy("Cluster", ClusterMomentumStrategy(
+        cluster_analyzer=cluster_analyzer,
+    ))
+    loop.register_strategy("Long_Safe", LongTermValueStrategy(
+        profile="Balanced", rebalance_freq=21,
+    ))
 
     # 시장 데이터 로드 (국내 주식 + 해외 유니버스 모두)
     from backend.data.asset_universe import AssetUniverseMapper
@@ -466,6 +512,79 @@ def run_backtest(db: DatabaseManager):
     logger.info(f"Dashboard data saved to {out_path}")
 
 
+def run_screen(db: DatabaseManager):
+    """스크리너 단독 실행 — CLI 리포트 + JSON 캐시 출력"""
+    import json
+    from pathlib import Path
+    import numpy as np
+    from backend.models.feature_engineer import FeatureEngineer
+    from backend.models.regime_hmm import RegimeHMM
+    from backend.models.anomaly_detector import AnomalyDetector
+    from backend.models.cluster_analyzer import CrossAssetClusterAnalyzer
+    from backend.screener.fundamental_scorer import FundamentalScorer
+    from backend.screener.screener import UnsupervisedScreener
+
+    logger.info("=" * 60)
+    logger.info("Screener Execution")
+    logger.info("=" * 60)
+
+    # 모델 로드
+    regime_model = RegimeHMM()
+    try:
+        regime_model.load()
+    except Exception as e:
+        logger.warning(f"Regime model not found: {e}")
+
+    anomaly_model = AnomalyDetector()
+    try:
+        anomaly_model.load()
+    except Exception as e:
+        logger.warning(f"AnomalyDetector not found: {e}")
+
+    cluster_analyzer = CrossAssetClusterAnalyzer()
+    try:
+        cluster_analyzer.load()
+    except Exception as e:
+        logger.warning(f"ClusterAnalyzer not found: {e}")
+
+    # 시장 데이터 로드
+    tickers = db.query_dataframe(
+        "SELECT ticker FROM stock_daily GROUP BY ticker HAVING max(volume) >= 50000"
+    )["ticker"].tolist()
+
+    market_data = {}
+    for ticker in tickers[:300]:  # 상위 300개 제한
+        df = db.query_dataframe(
+            f"SELECT date, open, high, low, close, volume "
+            f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
+        )
+        if not df.empty and len(df) >= 63:
+            market_data[ticker] = df
+
+    # FundamentalScorer (BridgeClient 없이 실행 시 빈 결과)
+    scorer = FundamentalScorer()
+
+    # 스크리너 실행
+    screener = UnsupervisedScreener(
+        db=db,
+        cluster_analyzer=cluster_analyzer,
+        anomaly_detector=anomaly_model,
+        regime_model=regime_model,
+        fundamental_scorer=scorer,
+    )
+
+    result = screener.run(market_data=market_data, tickers=tickers[:300])
+
+    # CLI 리포트 출력
+    screener.print_report(result)
+
+    # JSON 캐시 저장 (프론트엔드 대시보드용)
+    cache_dir = Path("cache_daishin")
+    cache_dir.mkdir(exist_ok=True)
+    result.save_json(str(cache_dir / "latest_screener.json"))
+    logger.info(f"Screener results saved to {cache_dir / 'latest_screener.json'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AutoML Quant Trade Pipeline")
     parser.add_argument("--collect-insert", action="store_true", help="Run data collection for new tickers only (Insert)")
@@ -474,6 +593,7 @@ def main():
     parser.add_argument("--collect-overseas", action="store_true", help="Collect overseas assets only")
     parser.add_argument("--train-regime", action="store_true", help="Train regime detection model (Phase 2)")
     parser.add_argument("--backtest", action="store_true", help="Run backtesting engine (Phase 3)")
+    parser.add_argument("--screen", action="store_true", help="Run unsupervised screener")
     parser.add_argument("--server", action="store_true", help="Start FastAPI Backend Server for Dashboard")
     parser.add_argument("--db-info", action="store_true", help="Show database statistics")
 
@@ -515,6 +635,10 @@ def main():
 
     if args.backtest:
         run_backtest(db)
+        return
+
+    if args.screen:
+        run_screen(db)
         return
 
     if args.server:
