@@ -635,14 +635,15 @@ def run_backtest_fast(db):
     벡터화 엔진을 사용한 고속 백테스트.
     
     이벤트 기반 엔진 대비 50~100x 빠른 속도.
-    파라미터 탐색, 전략 스크리닝 등에 적합.
+    4개 전략 (Regime/Anomaly/Cluster/Long_Safe) 통합.
     """
     import numpy as np
     from backend.engine.vectorized_engine import VectorizedBacktestEngine
     from backend.data.parquet_cache import ParquetCache
+    from backend.strategies.vectorized_strategies import VectorizedSignalGenerator
 
     logger.info("=" * 60)
-    logger.info("Vectorized Fast Backtest Engine")
+    logger.info("Vectorized Fast Backtest Engine (4-Strategy Integrated)")
     logger.info("=" * 60)
 
     # 데이터 로드 (Parquet 캐시 우선)
@@ -666,32 +667,30 @@ def run_backtest_fast(db):
         tax_rate=0.0018,
     )
 
-    # 심플 모멘텀 시그널 생성기 (기본 내장)
-    def momentum_signal_generator(prices_t, t, context):
-        """20일 모멘텀 전략: 상위 5% 매수, 하위 5% 매도."""
-        signals = np.zeros(len(prices_t))
-        history = context["price_history"]
+    # 사전 계산된 국면 로드 (가능한 경우)
+    precomputed_regimes = {}
+    try:
+        from backend.models.regime_hmm import RegimeHMM
+        regime_model = RegimeHMM()
+        regime_model.load()
+        logger.info("Regime model loaded for vectorized backtest.")
+    except Exception:
+        logger.info("Regime model not available. Using momentum-based regime approximation.")
 
-        if t < 20:
-            return signals
-
-        past_prices = history[t - 20, :]
-        valid = np.isfinite(prices_t) & np.isfinite(past_prices) & (past_prices > 0)
-        returns = np.where(valid, prices_t / past_prices - 1, 0)
-
-        if np.any(valid):
-            valid_returns = returns[valid]
-            if len(valid_returns) > 20:
-                buy_threshold = np.percentile(valid_returns, 95)
-                sell_threshold = np.percentile(valid_returns, 5)
-                signals[returns >= buy_threshold] = 0.05
-                signals[returns <= sell_threshold] = -0.5
-
-        return signals
+    # 통합 시그널 생성기 (4개 전략)
+    signal_gen = VectorizedSignalGenerator(
+        precomputed_regimes=precomputed_regimes,
+        rebalance_freq=21,
+        momentum_window=20,
+        vol_window=21,
+        anomaly_vol_threshold=2.0,
+        top_pct=0.10,
+        min_volume=10_000,
+    )
 
     equity_df = engine.run(
         market_data,
-        signal_generator=momentum_signal_generator,
+        signal_generator=signal_gen,
     )
 
     # 결과 저장

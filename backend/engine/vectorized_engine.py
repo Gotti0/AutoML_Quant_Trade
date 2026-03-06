@@ -134,11 +134,13 @@ class VectorizedBacktestEngine:
             # 현재 시점의 횡단면 가격 (Zero-Copy 뷰)
             prices_t = price_matrix[t, :]
             opens_t = self._open_matrix[t, :]
+            volumes_t = self._volume_matrix[t, :]
 
             # ── 1. 대기 시그널 체결 (t-1 시그널 → t 시가) ──
             if np.any(pending_signals != 0):
                 positions, cash = self._execute_signals(
-                    pending_signals, opens_t, positions, cash
+                    pending_signals, opens_t, positions, cash,
+                    volumes=volumes_t,
                 )
                 pending_signals[:] = 0
 
@@ -148,6 +150,7 @@ class VectorizedBacktestEngine:
                     "positions": positions,
                     "cash": cash,
                     "price_history": price_matrix[:t+1, :],
+                    "volume_history": self._volume_matrix[:t+1, :],
                     "dates": dates[:t+1],
                 }
                 pending_signals = signal_generator(prices_t, t, context)
@@ -201,6 +204,7 @@ class VectorizedBacktestEngine:
         prices: np.ndarray,
         positions: np.ndarray,
         cash: float,
+        volumes: Optional[np.ndarray] = None,
     ) -> Tuple[np.ndarray, float]:
         """
         시그널 배열을 기반으로 체결 시뮬레이션.
@@ -211,9 +215,21 @@ class VectorizedBacktestEngine:
         ■ 미래참조 편향 방지:
           - 시그널은 t-1 종가 기준으로 생성됨
           - 체결은 t 시가 기준
+        
+        ■ 체결 모델:
+          - √시장충격: γ × √(qty / ADV)
+          - 참여율 제한: 거래량의 10% 이내
         """
-        # 유효한 가격이 있는 종목만 처리
         valid_mask = np.isfinite(prices) & (prices > 0)
+        
+        # 참여율 제한용 최대 체결량 (거래량의 10%)
+        if volumes is not None:
+            max_qty_by_volume = np.where(volumes > 0, volumes * 0.10, 0).astype(np.int64)
+        else:
+            max_qty_by_volume = None
+        
+        gamma = 0.001  # 시장충격 계수
+        max_impact = 0.03  # 최대 시장충격 3%
         
         # 매도 먼저 처리 (현금 확보)
         sell_mask = valid_mask & (signals < 0) & (positions > 0)
@@ -222,8 +238,19 @@ class VectorizedBacktestEngine:
             for idx in sell_tickers:
                 sell_qty = int(positions[idx] * abs(signals[idx]))
                 sell_qty = min(sell_qty, int(positions[idx]))
+                
+                # 참여율 제한
+                if max_qty_by_volume is not None and max_qty_by_volume[idx] > 0:
+                    sell_qty = min(sell_qty, int(max_qty_by_volume[idx]))
+                
                 if sell_qty > 0:
-                    revenue = sell_qty * prices[idx]
+                    # √시장충격 (매도 시 가격 하락)
+                    adv = max_qty_by_volume[idx] * 10 if max_qty_by_volume is not None else sell_qty
+                    impact = gamma * np.sqrt(sell_qty / max(adv, 1))
+                    impact = min(impact, max_impact)
+                    exec_price = prices[idx] * (1 - impact)
+                    
+                    revenue = sell_qty * exec_price
                     fee = revenue * (self.commission_rate + self.tax_rate)
                     positions[idx] -= sell_qty
                     cash += revenue - fee
@@ -234,8 +261,20 @@ class VectorizedBacktestEngine:
             buy_tickers = np.where(buy_mask)[0]
             for idx in buy_tickers:
                 allocatable = cash * signals[idx]
-                buy_price = prices[idx] * (1 + self.commission_rate)
+                
+                # √시장충격 (매수 시 가격 상승)
+                tentative_qty = int(allocatable / (prices[idx] * (1 + self.commission_rate)))
+                adv = max_qty_by_volume[idx] * 10 if max_qty_by_volume is not None else max(tentative_qty, 1)
+                impact = gamma * np.sqrt(tentative_qty / max(adv, 1))
+                impact = min(impact, max_impact)
+                buy_price = prices[idx] * (1 + impact + self.commission_rate)
+                
                 qty = int(allocatable / buy_price)
+                
+                # 참여율 제한
+                if max_qty_by_volume is not None and max_qty_by_volume[idx] > 0:
+                    qty = min(qty, int(max_qty_by_volume[idx]))
+                
                 if qty > 0:
                     cost = qty * buy_price
                     if cost <= cash:
