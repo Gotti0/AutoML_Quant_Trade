@@ -31,6 +31,14 @@ except ImportError:
     logger.warning("hdbscan not installed. Using sklearn KMeans fallback.")
     from sklearn.cluster import KMeans
 
+# FAISS 가속 (선택적 의존성)
+try:
+    import faiss
+    FAISS_AVAILABLE = True
+except ImportError:
+    FAISS_AVAILABLE = False
+    logger.info("faiss not installed. FAISS acceleration disabled.")
+
 
 class CrossAssetClusterAnalyzer:
     """종목 간 비지도학습 클러스터 분석"""
@@ -39,6 +47,7 @@ class CrossAssetClusterAnalyzer:
                  min_cluster_size: int = 5,
                  min_samples: int = 3,
                  fallback_k: int = 5,
+                 use_faiss: bool = True,
                  random_state: int = 42):
         """
         Parameters:
@@ -52,6 +61,7 @@ class CrossAssetClusterAnalyzer:
         self.min_cluster_size = min_cluster_size
         self.min_samples = min_samples
         self.fallback_k = fallback_k
+        self.use_faiss = use_faiss and FAISS_AVAILABLE
         self.random_state = random_state
 
         self.scaler = RobustScaler()
@@ -104,7 +114,11 @@ class CrossAssetClusterAnalyzer:
         logger.info(f"PCA: {summary_df.shape[1]} features → {n_comp} components")
 
         # 3. 군집화
-        if HDBSCAN_AVAILABLE:
+        if FAISS_AVAILABLE and self.use_faiss:
+            self._labels = self._faiss_cluster(X_pca)
+            n_clusters = len(set(self._labels)) - (1 if -1 in self._labels else 0)
+            logger.info(f"FAISS KMeans: {n_clusters} clusters")
+        elif HDBSCAN_AVAILABLE:
             self._clusterer = hdbscan.HDBSCAN(
                 min_cluster_size=self.min_cluster_size,
                 min_samples=self.min_samples,
@@ -125,6 +139,33 @@ class CrossAssetClusterAnalyzer:
 
         self._feature_matrix = X_pca
         self._is_fitted = True
+
+    def _faiss_cluster(self, X_pca: np.ndarray) -> np.ndarray:
+        """
+        FAISS KMeans를 사용한 고속 클러스터링.
+        
+        FAISS의 KMeans는 C++ 백엔드로 거리 행렬 계산을 수행하여
+        scikit-learn 대비 대규모 데이터에서 10~50x 빠른 속도.
+        """
+        n_samples = X_pca.shape[0]
+        k = self.fallback_k
+        d = X_pca.shape[1]
+        
+        # float32로 변환 (FAISS 요구사항)
+        X_f32 = np.ascontiguousarray(X_pca, dtype=np.float32)
+        
+        # FAISS KMeans
+        kmeans = faiss.Kmeans(
+            d, k,
+            niter=20,
+            verbose=False,
+            seed=self.random_state,
+        )
+        kmeans.train(X_f32)
+        
+        # 가장 가까운 centroid 할당
+        _, labels = kmeans.index.search(X_f32, 1)
+        return labels.flatten()
 
     def _summarize_features(self, feat_df: pd.DataFrame) -> Optional[Dict]:
         """

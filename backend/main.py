@@ -411,49 +411,60 @@ def run_backtest(db: DatabaseManager):
         refresh_freq=21,
     )
 
-    # 시장 데이터 로드 (국내 주식 + 해외 유니버스 모두)
+    # 시장 데이터 로드 (Parquet 캐시 우선, 없으면 SQLite 폴백)
+    from backend.data.parquet_cache import ParquetCache
     from backend.data.asset_universe import AssetUniverseMapper
-    mapper = AssetUniverseMapper()
-    target_codes_overseas = mapper.get_codes_by_source("overseas")
-    target_codes_domestic_etf = mapper.get_codes_by_source("domestic")
-    
-    # KOSPI 일반 주식 중 최근 거래량이 어느정도 있는 종목만 필터링 (슬리피지 파산 방지)
-    # 서브쿼리를 사용하여 최대 거래량이 10000주 이상인 종목들만 대상으로 함
-    all_domestic_tickers = db.query_dataframe(
-        "SELECT ticker FROM stock_daily GROUP BY ticker HAVING max(volume) >= 50000"
-    )["ticker"].tolist()
-    
-    # 중복 제거 (ETF 포함)
-    all_domestic_targets = list(set(all_domestic_tickers + target_codes_domestic_etf))
     
     market_data = {}
     
-    # === 국내 데이터 로드 ===
-    logger.info(f"Loading {len(all_domestic_targets)} domestic tickers into memory...")
-    for ticker in all_domestic_targets:
-        df = db.query_dataframe(
-            f"SELECT date, open, high, low, close, volume "
-            f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
-        )
-        if not df.empty:
-            market_data[ticker] = df
+    if ParquetCache.is_available() and ParquetCache.cache_exists():
+        logger.info("Loading market data from Parquet cache (fast path)...")
+        market_data = ParquetCache.load_market_data(include_overseas=True)
+    else:
+        # Parquet 캐시가 없으면 SQLite에서 로드 후 캐시 생성
+        logger.info("Parquet cache not found. Loading from SQLite (slow path)...")
+        
+        mapper = AssetUniverseMapper()
+        target_codes_overseas = mapper.get_codes_by_source("overseas")
+        target_codes_domestic_etf = mapper.get_codes_by_source("domestic")
+        
+        all_domestic_tickers = db.query_dataframe(
+            "SELECT ticker FROM stock_daily GROUP BY ticker HAVING max(volume) >= 50000"
+        )["ticker"].tolist()
+        
+        all_domestic_targets = list(set(all_domestic_tickers + target_codes_domestic_etf))
+        
+        logger.info(f"Loading {len(all_domestic_targets)} domestic tickers into memory...")
+        for ticker in all_domestic_targets:
+            df = db.query_dataframe(
+                f"SELECT date, open, high, low, close, volume "
+                f"FROM stock_daily WHERE ticker='{ticker}' ORDER BY date"
+            )
+            if not df.empty:
+                market_data[ticker] = df
 
-    # === 해외 자산 전체 데이터 로드 ===
-    # 해외 자산도 거래량이 어느 정도 있는 종목만 포섭
-    all_overseas_codes = db.query_dataframe(
-        "SELECT code FROM overseas_daily GROUP BY code HAVING max(volume) >= 10000"
-    )["code"].tolist()
-    
-    all_overseas_targets = list(set(all_overseas_codes + target_codes_overseas))
-    
-    logger.info(f"Loading {len(all_overseas_targets)} overseas codes into memory...")
-    for code in all_overseas_targets:
-        df = db.query_dataframe(
-            f"SELECT date, open, high, low, close, volume "
-            f"FROM overseas_daily WHERE code='{code}' ORDER BY date"
-        )
-        if not df.empty:
-            market_data[code] = df
+        all_overseas_codes = db.query_dataframe(
+            "SELECT code FROM overseas_daily GROUP BY code HAVING max(volume) >= 10000"
+        )["code"].tolist()
+        
+        all_overseas_targets = list(set(all_overseas_codes + target_codes_overseas))
+        
+        logger.info(f"Loading {len(all_overseas_targets)} overseas codes into memory...")
+        for code in all_overseas_targets:
+            df = db.query_dataframe(
+                f"SELECT date, open, high, low, close, volume "
+                f"FROM overseas_daily WHERE code='{code}' ORDER BY date"
+            )
+            if not df.empty:
+                market_data[code] = df
+        
+        # 다음 실행을 위해 Parquet 캐시 자동 생성
+        if ParquetCache.is_available():
+            logger.info("Building Parquet cache for future runs...")
+            try:
+                ParquetCache.build_cache(db)
+            except Exception as e:
+                logger.warning(f"Parquet cache build failed (non-critical): {e}")
 
     if not market_data:
         logger.error("No market data available. Run --collect first.")

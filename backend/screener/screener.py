@@ -26,6 +26,21 @@ from backend.screener.fundamental_scorer import FundamentalScorer
 logger = logging.getLogger(__name__)
 
 
+def _extract_single_ticker_features(ticker: str, price_df) -> 'Optional[pd.DataFrame]':
+    """
+    단일 종목 피처 추출 (ProcessPoolExecutor용 최상위 함수).
+    
+    멀티프로세싱에서 pickle 직렬화가 가능하도록 클래스 밖에 정의.
+    """
+    try:
+        fe = FeatureEngineer()
+        features = fe.extract(price_df)
+        if not features.empty and len(features) >= 20:
+            return features
+    except Exception:
+        pass
+    return None
+
 class UnsupervisedScreener:
     """비지도학습 + 기본적분석 통합 스크리너"""
 
@@ -89,15 +104,8 @@ class UnsupervisedScreener:
         all_tickers = list(market_data.keys())
         logger.info(f"스크리닝 대상: {len(all_tickers)}개 종목")
 
-        # ─── 2. 피처 추출 ───
-        multi_asset_features = {}
-        for ticker, price_df in market_data.items():
-            try:
-                features = self.feature_engineer.extract(price_df)
-                if not features.empty and len(features) >= 20:
-                    multi_asset_features[ticker] = features
-            except Exception as e:
-                logger.debug(f"Feature extraction failed for {ticker}: {e}")
+        # ─── 2. 피처 추출 (멀티프로세싱 병렬화) ───
+        multi_asset_features = self._extract_features_parallel(market_data)
 
         if len(multi_asset_features) < 10:
             logger.warning(f"Too few tickers with valid features: {len(multi_asset_features)}")
@@ -298,6 +306,59 @@ class UnsupervisedScreener:
 
         # top_n 제한
         return selected.head(self.top_n)["ticker"].tolist()
+
+    def _extract_features_parallel(self, market_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """
+        멀티프로세싱 기반 피처 추출.
+        
+        종목 간 독립적인 FeatureEngineer.extract()를 여러 CPU 코어에
+        분산하여 병렬 처리. 코어 수에 비례하여 속도 향상.
+        """
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+        from multiprocessing import cpu_count
+        
+        items = list(market_data.items())
+        n_tickers = len(items)
+        workers = min(cpu_count() - 1, 8)  # 최대 8코어
+        
+        # 소수 종목일 때는 오히려 오버헤드가 크므로 직렬 처리
+        if n_tickers < 50 or workers <= 1:
+            return self._extract_features_serial(market_data)
+        
+        logger.info(f"피처 추출 시작: {n_tickers}개 종목, {workers}개 워커 프로세스")
+        
+        results = {}
+        try:
+            with ProcessPoolExecutor(max_workers=workers) as executor:
+                future_to_ticker = {
+                    executor.submit(_extract_single_ticker_features, ticker, price_df): ticker
+                    for ticker, price_df in items
+                }
+                for future in as_completed(future_to_ticker):
+                    ticker = future_to_ticker[future]
+                    try:
+                        result = future.result()
+                        if result is not None:
+                            results[ticker] = result
+                    except Exception as e:
+                        logger.debug(f"Feature extraction failed for {ticker}: {e}")
+        except Exception as e:
+            logger.warning(f"Parallel extraction failed, falling back to serial: {e}")
+            return self._extract_features_serial(market_data)
+        
+        return results
+    
+    def _extract_features_serial(self, market_data: Dict[str, pd.DataFrame]) -> Dict[str, pd.DataFrame]:
+        """직렬 피처 추출 (폴백용)."""
+        multi_asset_features = {}
+        for ticker, price_df in market_data.items():
+            try:
+                features = self.feature_engineer.extract(price_df)
+                if not features.empty and len(features) >= 20:
+                    multi_asset_features[ticker] = features
+            except Exception as e:
+                logger.debug(f"Feature extraction failed for {ticker}: {e}")
+        return multi_asset_features
 
     def _load_market_data(self, tickers: Optional[List[str]] = None) -> Dict[str, pd.DataFrame]:
         """DB에서 시장 데이터 로드."""

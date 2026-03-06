@@ -10,13 +10,117 @@ AutoML_Quant_Trade - 특성 벡터 추출 파이프라인
   - 수익률은 pct_change()로 과거 대비만 계산
 """
 import logging
-from typing import Optional
+from typing import Dict, Optional
 
 import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+# PyTorch GPU 가속 (선택적)
+try:
+    import torch
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    logger.info("PyTorch not installed. GPU feature acceleration disabled.")
+
+
+def _get_device():
+    """CUDA 가용 시 GPU, 아니면 CPU 반환."""
+    if TORCH_AVAILABLE and torch.cuda.is_available():
+        return torch.device('cuda')
+    return torch.device('cpu') if TORCH_AVAILABLE else None
+
+
+def batch_rolling_features_gpu(
+    price_dict: Dict[str, pd.DataFrame],
+    windows: list = None,
+) -> Dict[str, pd.DataFrame]:
+    """
+    PyTorch as_strided를 사용한 GPU 배치 롤링 피처 계산.
+    
+    모든 종목의 close 가격을 하나의 2D 텐서(n_tickers × n_times)로 쌓은 뒤,
+    GPU에서 동시에 rolling mean, std를 계산하여 종목별 DataFrame으로 반환.
+    
+    Parameters:
+        price_dict: {ticker: DataFrame[date, close, ...]}
+        windows: 롤링 윈도우 크기 리스트 (기본: [21, 63])
+    
+    Returns:
+        {ticker: DataFrame[rolling_mean_21, rolling_std_21, ...]}
+    """
+    if not TORCH_AVAILABLE:
+        return {}
+    
+    windows = windows or [21, 63]
+    device = _get_device()
+    
+    # 종목을 최대 시계열 길이로 정렬
+    tickers = list(price_dict.keys())
+    if not tickers:
+        return {}
+    
+    # 최소 길이 종목 필터 (가장 긴 윈도우보다 길어야 유효)
+    max_window = max(windows)
+    valid_tickers = [t for t in tickers if len(price_dict[t]) > max_window]
+    if not valid_tickers:
+        return {}
+    
+    # 공통 길이로 자르기 (가장 짧은 종목 기준)
+    min_len = min(len(price_dict[t]) for t in valid_tickers)
+    
+    # 2D 텐서 구성: (n_tickers, min_len)
+    close_matrix = np.stack([
+        price_dict[t]["close"].values[-min_len:].astype(np.float64)
+        for t in valid_tickers
+    ])
+    
+    tensor = torch.from_numpy(close_matrix).to(device)
+    
+    results = {t: {} for t in valid_tickers}
+    
+    for window in windows:
+        n_tickers, seq_len = tensor.shape
+        n_windows = seq_len - window + 1
+        
+        if n_windows <= 0:
+            continue
+        
+        # as_strided: Zero-Copy 롤링 윈도우 뷰
+        strides = tensor.stride()
+        rolling_view = tensor.as_strided(
+            size=(n_tickers, n_windows, window),
+            stride=(strides[0], strides[1], strides[1])
+        )
+        
+        # GPU 병렬 집계 연산
+        rolling_mean = rolling_view.mean(dim=-1).cpu().numpy()
+        rolling_std = rolling_view.std(dim=-1).cpu().numpy()
+        
+        # 앞쪽 NaN 패딩 (원본 시계열 길이와 맞추기)
+        pad_len = window - 1
+        for i, ticker in enumerate(valid_tickers):
+            results[ticker][f"gpu_rolling_mean_{window}"] = np.concatenate([
+                np.full(pad_len, np.nan), rolling_mean[i]
+            ])
+            results[ticker][f"gpu_rolling_std_{window}"] = np.concatenate([
+                np.full(pad_len, np.nan), rolling_std[i]
+            ])
+    
+    # DataFrame으로 변환
+    output = {}
+    for ticker in valid_tickers:
+        if results[ticker]:
+            df = pd.DataFrame(results[ticker])
+            df["date"] = price_dict[ticker]["date"].values[-min_len:]
+            output[ticker] = df
+    
+    logger.info(
+        f"GPU batch rolling features: {len(output)} tickers, "
+        f"windows={windows}, device={device}"
+    )
+    return output
 
 class FeatureEngineer:
     """시장 국면 감지용 특성 벡터 추출"""

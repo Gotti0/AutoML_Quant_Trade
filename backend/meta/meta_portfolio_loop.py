@@ -62,10 +62,10 @@ class MetaPortfolioLoop(BacktestEventLoop):
         기존 BacktestEventLoop.run()의 이벤트 처리 루프에
         메타 레이어 훅을 삽입한 오버라이드 구현.
         """
-        from queue import PriorityQueue
+        import heapq
 
         pq = self._build_event_queue(market_data, timeframe)
-        total_events = pq.qsize()
+        total_events = len(pq)
         logger.info(
             f"MetaPortfolioLoop started: {total_events} events, "
             f"{len(market_data)} tickers"
@@ -74,8 +74,8 @@ class MetaPortfolioLoop(BacktestEventLoop):
         event_count = 0
         current_timestamp = None
 
-        while not pq.empty():
-            ts, _, event = pq.get()
+        while pq:
+            ts, _, event = heapq.heappop(pq)
             event_count += 1
 
             if current_timestamp is None:

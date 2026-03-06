@@ -9,7 +9,7 @@ AutoML_Quant_Trade - 이벤트 기반 백테스팅 메인 루프
   3. 시그널 발생 시점 t의 체결은 t+1 시가 기준
 """
 import logging
-from queue import PriorityQueue
+import heapq
 from typing import Dict, List, Optional, TYPE_CHECKING
 
 import pandas as pd
@@ -100,7 +100,7 @@ class BacktestEventLoop:
             에퀴티 커브 DataFrame
         """
         pq = self._build_event_queue(market_data, timeframe)
-        total_events = pq.qsize()
+        total_events = len(pq)
         logger.info(f"Backtesting started: {total_events} events, "
                      f"{len(market_data)} tickers")
 
@@ -108,8 +108,8 @@ class BacktestEventLoop:
         # 날짜(YYYYMMDD) 단위 de-duplication을 위한 마지막 처리 날짜 추적
         _last_date: int = -1
 
-        while not pq.empty():
-            _, _, event = pq.get()
+        while pq:
+            _, _, event = heapq.heappop(pq)
             event_count += 1
 
             # 현재 가격 갱신
@@ -258,24 +258,28 @@ class BacktestEventLoop:
         return None
 
     def _build_event_queue(self, market_data: Dict[str, pd.DataFrame],
-                           timeframe: str) -> PriorityQueue:
-        """가격 DataFrame을 시간순 MarketEvent 큐로 변환."""
-        pq = PriorityQueue()
+                           timeframe: str) -> list:
+        """가격 DataFrame을 시간순 MarketEvent 힙으로 변환.
+        
+        Performance: itertuples() + heapq는 iterrows() + PriorityQueue 대비
+        약 10~15배 빠름 (Series 객체 생성 및 Mutex 락 오버헤드 제거).
+        """
+        pq = []
         event_id = 0
 
         for ticker, df in market_data.items():
-            for _, row in df.iterrows():
+            for row in df.itertuples(index=False):
                 event = MarketEvent(
-                    timestamp=int(row["date"]),
+                    timestamp=int(row.date),
                     ticker=ticker,
-                    open=float(row["open"]),
-                    high=float(row["high"]),
-                    low=float(row["low"]),
-                    close=float(row["close"]),
-                    volume=int(row["volume"]),
+                    open=float(row.open),
+                    high=float(row.high),
+                    low=float(row.low),
+                    close=float(row.close),
+                    volume=int(row.volume),
                     timeframe=timeframe,
                 )
-                pq.put((event.timestamp, event_id, event))
+                heapq.heappush(pq, (event.timestamp, event_id, event))
                 event_id += 1
 
         return pq
