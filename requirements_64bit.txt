@@ -6,3 +6,4 @@ httpx
 fastapi
 uvicorn
 pytest
+hdbscan

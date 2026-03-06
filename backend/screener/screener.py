@@ -111,6 +111,25 @@ class UnsupervisedScreener:
             logger.warning(f"Too few tickers with valid features: {len(multi_asset_features)}")
             return self._empty_result(target_date or 0)
 
+        # ─── 2-b. GPU 롤링 피처 병합 ───
+        try:
+            from backend.models.feature_engineer import batch_rolling_features_gpu, TORCH_AVAILABLE
+            if TORCH_AVAILABLE:
+                gpu_features = batch_rolling_features_gpu(market_data, windows=[21, 63])
+                merged_count = 0
+                for ticker in list(multi_asset_features.keys()):
+                    if ticker in gpu_features:
+                        feat_df = multi_asset_features[ticker]
+                        gpu_df = gpu_features[ticker]
+                        # date 기준 병합
+                        merged = feat_df.merge(gpu_df, on="date", how="left")
+                        multi_asset_features[ticker] = merged
+                        merged_count += 1
+                if merged_count > 0:
+                    logger.info(f"GPU 롤링 피처 병합 완료: {merged_count}개 종목")
+        except Exception as e:
+            logger.debug(f"GPU feature merge skipped: {e}")
+
         logger.info(f"피처 추출 완료: {len(multi_asset_features)}개 종목")
 
         # ─── 3. 군집화 ───
@@ -322,7 +341,7 @@ class UnsupervisedScreener:
         workers = min(cpu_count() - 1, 8)  # 최대 8코어
         
         # 소수 종목일 때는 오히려 오버헤드가 크므로 직렬 처리
-        if n_tickers < 50 or workers <= 1:
+        if n_tickers < 20 or workers <= 1:
             return self._extract_features_serial(market_data)
         
         logger.info(f"피처 추출 시작: {n_tickers}개 종목, {workers}개 워커 프로세스")

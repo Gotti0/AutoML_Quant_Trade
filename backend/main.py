@@ -11,6 +11,7 @@ Usage:
     python -m backend.main --collect-overseas   # 해외 자산만 수집
     python -m backend.main --train-regime      # 국면 모델 학습 (Phase 2)
     python -m backend.main --backtest          # 백테스팅 실행 (Phase 3)
+    python -m backend.main --backtest-fast      # 벡터화 엔진 고속 백테스트
     python -m backend.main --screen            # 스크리너 단독 실행
     python -m backend.main --server            # 대시보드 백엔드 구동 (FastAPI)
 """
@@ -629,6 +630,78 @@ def run_screen(db: DatabaseManager):
                 pass
 
 
+def run_backtest_fast(db):
+    """
+    벡터화 엔진을 사용한 고속 백테스트.
+    
+    이벤트 기반 엔진 대비 50~100x 빠른 속도.
+    파라미터 탐색, 전략 스크리닝 등에 적합.
+    """
+    import numpy as np
+    from backend.engine.vectorized_engine import VectorizedBacktestEngine
+    from backend.data.parquet_cache import ParquetCache
+
+    logger.info("=" * 60)
+    logger.info("Vectorized Fast Backtest Engine")
+    logger.info("=" * 60)
+
+    # 데이터 로드 (Parquet 캐시 우선)
+    if ParquetCache.is_available() and ParquetCache.cache_exists():
+        logger.info("Loading market data from Parquet cache...")
+        market_data = ParquetCache.load_market_data(include_overseas=True)
+    else:
+        logger.info("Parquet cache not found. Building cache first...")
+        ParquetCache.build_cache(db)
+        market_data = ParquetCache.load_market_data(include_overseas=True)
+
+    if not market_data:
+        logger.error("No market data available. Run --collect first.")
+        return
+
+    logger.info(f"Loaded {len(market_data)} tickers.")
+
+    engine = VectorizedBacktestEngine(
+        initial_capital=100_000_000,
+        commission_rate=0.00015,
+        tax_rate=0.0018,
+    )
+
+    # 심플 모멘텀 시그널 생성기 (기본 내장)
+    def momentum_signal_generator(prices_t, t, context):
+        """20일 모멘텀 전략: 상위 5% 매수, 하위 5% 매도."""
+        signals = np.zeros(len(prices_t))
+        history = context["price_history"]
+
+        if t < 20:
+            return signals
+
+        past_prices = history[t - 20, :]
+        valid = np.isfinite(prices_t) & np.isfinite(past_prices) & (past_prices > 0)
+        returns = np.where(valid, prices_t / past_prices - 1, 0)
+
+        if np.any(valid):
+            valid_returns = returns[valid]
+            if len(valid_returns) > 20:
+                buy_threshold = np.percentile(valid_returns, 95)
+                sell_threshold = np.percentile(valid_returns, 5)
+                signals[returns >= buy_threshold] = 0.05
+                signals[returns <= sell_threshold] = -0.5
+
+        return signals
+
+    equity_df = engine.run(
+        market_data,
+        signal_generator=momentum_signal_generator,
+    )
+
+    # 결과 저장
+    from pathlib import Path
+    cache_dir = Path("cache_daishin")
+    cache_dir.mkdir(exist_ok=True)
+    equity_df.to_csv(str(cache_dir / "fast_backtest_equity.csv"), index=False)
+    logger.info(f"Fast backtest results saved to {cache_dir / 'fast_backtest_equity.csv'}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="AutoML Quant Trade Pipeline")
     parser.add_argument("--collect-insert", action="store_true", help="Run data collection for new tickers only (Insert)")
@@ -637,6 +710,7 @@ def main():
     parser.add_argument("--collect-overseas", action="store_true", help="Collect overseas assets only")
     parser.add_argument("--train-regime", action="store_true", help="Train regime detection model (Phase 2)")
     parser.add_argument("--backtest", action="store_true", help="Run backtesting engine (Phase 3)")
+    parser.add_argument("--backtest-fast", action="store_true", help="Run vectorized fast backtesting")
     parser.add_argument("--screen", action="store_true", help="Run unsupervised screener")
     parser.add_argument("--server", action="store_true", help="Start FastAPI Backend Server for Dashboard")
     parser.add_argument("--db-info", action="store_true", help="Show database statistics")
@@ -679,6 +753,10 @@ def main():
 
     if args.backtest:
         run_backtest(db)
+        return
+
+    if args.backtest_fast:
+        run_backtest_fast(db)
         return
 
     if args.screen:
