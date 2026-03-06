@@ -404,7 +404,6 @@ def run_backtest(db: DatabaseManager):
     # 스크리너 연동: 21 거래일마다 종목 풀 재계산 후 전략에 주입
     screener_market_data = {
         t: df for t, df in market_data.items()
-        if t.startswith("A")  # 국내 주식만 스크리너 대상
     }
     loop.set_screener(
         screener=screener,
@@ -584,28 +583,39 @@ def run_screen(db: DatabaseManager):
         if not df.empty and len(df) >= 63:
             market_data[ticker] = df
 
-    # FundamentalScorer (BridgeClient 없이 실행 시 빈 결과)
-    scorer = FundamentalScorer()
+    # FundamentalScorer (BridgeClient 주입하여 실시간 재무 데이터 반영)
+    from backend.data.bridge_client import BridgeClient
+    
+    try:
+        client = BridgeClient()
+        scorer = FundamentalScorer(bridge_client=client)
 
-    # 스크리너 실행
-    screener = UnsupervisedScreener(
-        db=db,
-        cluster_analyzer=cluster_analyzer,
-        anomaly_detector=anomaly_model,
-        regime_model=regime_model,
-        fundamental_scorer=scorer,
-    )
+        # 스크리너 실행
+        screener = UnsupervisedScreener(
+            db=db,
+            cluster_analyzer=cluster_analyzer,
+            anomaly_detector=anomaly_model,
+            regime_model=regime_model,
+            fundamental_scorer=scorer,
+        )
 
-    result = screener.run(market_data=market_data, tickers=tickers[:300])
+        result = screener.run(market_data=market_data, tickers=tickers[:300])
 
-    # CLI 리포트 출력
-    screener.print_report(result)
+        # CLI 리포트 출력
+        screener.print_report(result)
 
-    # JSON 캐시 저장 (프론트엔드 대시보드용)
-    cache_dir = Path("cache_daishin")
-    cache_dir.mkdir(exist_ok=True)
-    result.save_json(str(cache_dir / "latest_screener.json"))
-    logger.info(f"Screener results saved to {cache_dir / 'latest_screener.json'}")
+        # JSON 캐시 저장 (프론트엔드 대시보드용)
+        cache_dir = Path("cache_daishin")
+        cache_dir.mkdir(exist_ok=True)
+        result.save_json(str(cache_dir / "latest_screener.json"))
+        logger.info(f"Screener results saved to {cache_dir / 'latest_screener.json'}")
+        
+    finally:
+        if 'client' in locals() and client:
+            try:
+                client.close()
+            except Exception:
+                pass
 
 
 def main():

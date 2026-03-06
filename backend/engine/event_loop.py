@@ -119,7 +119,7 @@ class BacktestEventLoop:
             if event.timestamp != _last_date:
                 _last_date = event.timestamp
                 self._screener_day_counter += 1
-                self._maybe_refresh_screener()
+                self._maybe_refresh_screener(event.timestamp)
 
             # 대기 시그널 체결 (이전 봉 시그널 → 현재 봉 시가)
             self._process_pending_signals(event)
@@ -149,18 +149,28 @@ class BacktestEventLoop:
 
         return self.ledger.get_equity_curve()
 
-    def _maybe_refresh_screener(self) -> None:
-        """리밸런싱 주기 도래 시 스크리너를 재실행하고 결과를 전략에 주입."""
+    def _maybe_refresh_screener(self, current_timestamp: int) -> None:
+        """리밸런싱 주기 도래 시 스크리너를 재실행하고 결과를 전략에 주입.
+        미래 참조 편향을 방지하기 위해 current_timestamp 이전의 데이터만 잘라서 반환.
+        """
         if self._screener is None:
             return
         if self._screener_day_counter % self._screener_refresh_freq != 0:
             return
 
         try:
-            tickers = list(self._screener_market_data.keys()) \
-                if self._screener_market_data else []
+            sliced_market_data = {}
+            if self._screener_market_data:
+                for ticker, df in self._screener_market_data.items():
+                    past_df = df[df["date"] <= current_timestamp].copy()
+                    if len(past_df) >= 63:
+                        sliced_market_data[ticker] = past_df
+
+            tickers = list(sliced_market_data.keys())
+            
             result = self._screener.run(
-                market_data=self._screener_market_data,
+                target_date=current_timestamp,
+                market_data=sliced_market_data,
                 tickers=tickers,
             )
             self.inject_screener_result(result)
