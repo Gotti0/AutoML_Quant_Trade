@@ -37,24 +37,42 @@ class SQLiteLogHandler(logging.Handler):
             self.handleError(record)
 
     def _write_logs_loop(self):
-        """큐에서 로그를 꺼내 순차적으로 DB에 기록하는 루프"""
+        """큐에서 로그를 꺼내 배치로 DB에 기록하는 루프"""
+        batch = []
+        batch_size = 100
+        
         while not self._stop_event.is_set():
             try:
-                # 큐에서 데이터를 가져올 때 무한정 기다리지 않음(1초 타임아웃)
-                level, source, message = self._log_queue.get(timeout=1.0)
+                # 큐에서 데이터를 가져올 때 무한정 기다리지 않음(0.5초 타임아웃)
+                level, source, message = self._log_queue.get(timeout=0.5)
+                batch.append((level, source, message))
+                self._log_queue.task_done()
                 
-                try:
-                    self.db.insert_log(level=level, source=source, message=message)
-                except sqlite3.DatabaseError as e:
-                    # SQLite 쓰기 에러 발생 시 콘솔에만 출력 (재귀 방지)
-                    print(f"[SQLiteLogHandler] Failed to write log: {e}")
-                finally:
-                    self._log_queue.task_done()
+                # 배치 크기 도달 시 플러시
+                if len(batch) >= batch_size:
+                    self._flush_batch(batch)
+                    batch = []
 
             except queue.Empty:
+                # 타임아웃 시 대기 중인 배치 플러시
+                if batch:
+                    self._flush_batch(batch)
+                    batch = []
                 continue
             except Exception as e:
                 print(f"[SQLiteLogHandler] Unexpected error in writer thread: {e}")
+        
+        # 종료 시 잔여 배치 플러시
+        if batch:
+            self._flush_batch(batch)
+    
+    def _flush_batch(self, batch):
+        """배치 로그를 DB에 일괄 기록"""
+        try:
+            for level, source, message in batch:
+                self.db.insert_log(level=level, source=source, message=message)
+        except Exception as e:
+            print(f"[SQLiteLogHandler] Failed to write log batch: {e}")
 
     def close(self):
         """핸들러 종료 시 스레드 정리"""

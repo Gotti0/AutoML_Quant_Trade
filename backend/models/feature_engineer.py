@@ -122,27 +122,36 @@ def batch_rolling_features_gpu(
     )
     return output
 
+# ── 피처 캠싱 (동일 종목 중복 계산 방지) ──
+_feature_cache: dict = {}
+
 class FeatureEngineer:
     """시장 국면 감지용 특성 벡터 추출"""
 
     def extract(self, price_df: pd.DataFrame,
+                minute_df: pd.DataFrame = None,
                 macro_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
         """
         가격 데이터와 거시지표로부터 특성 벡터를 추출.
-
-        Parameters:
-            price_df: DataFrame with columns [date, open, high, low, close, volume]
-                      date 기준 오름차순 정렬 필수
-            macro_df: (선택) DataFrame with columns [date, 다우존스, 나스닥, ...]
-                      load_macro_all()의 와이드 포맷 결과
-
-        Returns:
-            DataFrame: index=date, columns=[각종 특성], NaN 행 제거됨
-
-        ■ 미래참조 편향 방지:
-          - 모든 지표는 해당 날짜 이전 데이터만으로 계산
-          - rolling(center=True) 절대 사용 금지
+        동일 데이터에 대한 중복 계산을 캐싱으로 방지.
         """
+        # 캐시 키: (마지막 날짜, 행 수)
+        cache_key = (int(price_df["date"].iloc[-1]), len(price_df))
+        if cache_key in _feature_cache:
+            return _feature_cache[cache_key].copy()
+        
+        result = self._extract_impl(price_df, minute_df, macro_df)
+        
+        # 캐시 크기 제한 (메모리 보호)
+        if len(_feature_cache) > 500:
+            _feature_cache.clear()
+        _feature_cache[cache_key] = result
+        return result
+
+    def _extract_impl(self, price_df: pd.DataFrame,
+                minute_df: Optional[pd.DataFrame] = None,
+                macro_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+        """실제 피처 추출 구현."""
         df = price_df.copy()
         df = df.sort_values("date").reset_index(drop=True)
 
@@ -209,25 +218,30 @@ class FeatureEngineer:
             window=21, min_periods=21
         ).kurt()
 
-        # 허스트 지수 (>0.5: 추세 지속, <0.5: 평균 회귀, =0.5: 랜덤워크)
-        df["hurst_exponent"] = df["close"].rolling(
-            window=63, min_periods=63
-        ).apply(self._compute_hurst_exponent, raw=True)
+        # 허스트 지수 (Numpy 벡터화 — rolling.apply 제거)
+        df["hurst_exponent"] = self._compute_hurst_vectorized(
+            df["close"].values, window=63
+        )
 
         # 수익률 정보 엔트로피 (불확실성: 높을수록 예측 곤란)
         df["entropy_21d"] = df["return_1d"].rolling(
             window=21, min_periods=21
         ).apply(self._compute_entropy, raw=True)
 
-        # 자기상관 계수 (lag 1~5: 시장 효율성 측정)
+        # 자기상관 계수 (Numpy 벡터화 — rolling.apply + lambda 제거)
+        returns_arr = df["return_1d"].values
         for lag in range(1, 6):
-            df[f"autocorr_lag{lag}"] = df["return_1d"].rolling(
-                window=63, min_periods=63
-            ).apply(lambda x: pd.Series(x).autocorr(lag=lag), raw=False)
+            df[f"autocorr_lag{lag}"] = self._rolling_autocorr_numpy(
+                returns_arr, lag=lag, window=63
+            )
 
         # ── 거시지표 병합 (가용 시) ──
         if macro_df is not None and not macro_df.empty:
             df = self._merge_macro(df, macro_df)
+            
+        # ── 단기 트레이딩 핵심 Feature: 09:00 ~ 09:30 수익률 병합 ──
+        if minute_df is not None and not minute_df.empty:
+            df = self._merge_intraday_returns(df, minute_df)
 
         # 결과 컬럼 선택
         feature_cols = [
@@ -251,6 +265,12 @@ class FeatureEngineer:
         macro_cols = [c for c in df.columns if c.startswith("macro_")]
         feature_cols.extend(macro_cols)
 
+        # 단기 수익률 컬럼이 추가되었으면 포함 (다중 청산 타겟 + 갭 피처)
+        target_cols = [f"ret_{hm}" for hm in [905, 910, 915, 920, 925, 930]] + ["gap_pct"]
+        for t_col in target_cols:
+            if t_col in df.columns:
+                feature_cols.append(t_col)
+
         result = df[feature_cols].copy()
 
         # NaN 행 제거 (학습 초반 워밍업 구간)
@@ -265,49 +285,103 @@ class FeatureEngineer:
         return result
 
     @staticmethod
-    def _compute_hurst_exponent(prices: np.ndarray) -> float:
+    def _compute_hurst_vectorized(prices: np.ndarray, window: int = 63) -> np.ndarray:
         """
-        Rescaled Range (R/S) 방법으로 허스트 지수 추정.
-        >0.5: 추세 지속, <0.5: 평균 회귀, =0.5: 랜덤워크
+        Numpy 벡터화된 Hurst 지수 계산.
+        
+        rolling.apply() 대신 sliding_window_view로 전체 윈도우를
+        한 번에 생성하여 벡터화 R/S 분석 실행.
         """
-        if len(prices) < 20:
-            return 0.5
-
-        returns = np.diff(np.log(prices + 1e-10))
-        n = len(returns)
-
-        max_k = min(n // 2, 32)
+        n = len(prices)
+        result = np.full(n, np.nan)
+        
+        if n < window:
+            return result
+        
+        log_prices = np.log(prices + 1e-10)
+        log_returns = np.diff(log_prices)
+        
+        # sliding window 생성 (zero-copy)
+        from numpy.lib.stride_tricks import sliding_window_view
+        windows = sliding_window_view(log_returns, window - 1)
+        # windows.shape = (n - window + 1, window - 1)
+        
+        n_windows = windows.shape[0]
+        hurst_values = np.full(n_windows, 0.5)
+        
+        # 고정된 k 값들에 대해 R/S 계산
+        max_k = min((window - 1) // 2, 32)
         if max_k < 4:
-            return 0.5
+            result[window:] = 0.5
+            return result
+        
+        k_values = np.arange(4, max_k + 1)
+        log_ks = np.log(k_values)
+        
+        for w_idx in range(n_windows):
+            chunk_returns = windows[w_idx]
+            rs_list = []
+            
+            for k in k_values:
+                n_chunks = len(chunk_returns) // k
+                if n_chunks < 1:
+                    continue
+                
+                rs_vals = []
+                for i in range(n_chunks):
+                    seg = chunk_returns[i * k:(i + 1) * k]
+                    mean_seg = seg.mean()
+                    cumdev = np.cumsum(seg - mean_seg)
+                    R = cumdev.max() - cumdev.min()
+                    S = seg.std(ddof=1)
+                    if S > 1e-10:
+                        rs_vals.append(R / S)
+                
+                if rs_vals:
+                    rs_list.append(np.log(np.mean(rs_vals)))
+                else:
+                    rs_list.append(np.nan)
+            
+            valid_mask = ~np.isnan(rs_list)
+            if np.sum(valid_mask) >= 2:
+                valid_rs = np.array(rs_list)[valid_mask]
+                valid_logk = log_ks[:len(rs_list)][valid_mask]
+                coeffs = np.polyfit(valid_logk, valid_rs, 1)
+                hurst_values[w_idx] = float(np.clip(coeffs[0], 0.0, 1.0))
+        
+        result[window:] = hurst_values[:n - window]
+        return result
 
-        rs_list = []
-        ns_list = []
-
-        for k in range(4, max_k + 1):
-            n_chunks = n // k
-            if n_chunks < 1:
-                continue
-
-            rs_vals = []
-            for i in range(n_chunks):
-                chunk = returns[i * k:(i + 1) * k]
-                mean_chunk = chunk.mean()
-                cumdev = np.cumsum(chunk - mean_chunk)
-                R = cumdev.max() - cumdev.min()
-                S = chunk.std(ddof=1)
-                if S > 1e-10:
-                    rs_vals.append(R / S)
-
-            if rs_vals:
-                rs_list.append(np.log(np.mean(rs_vals)))
-                ns_list.append(np.log(k))
-
-        if len(ns_list) < 2:
-            return 0.5
-
-        # 선형 회귀로 기울기 = H
-        coeffs = np.polyfit(ns_list, rs_list, 1)
-        return float(np.clip(coeffs[0], 0.0, 1.0))
+    @staticmethod
+    def _rolling_autocorr_numpy(returns: np.ndarray, lag: int, window: int) -> np.ndarray:
+        """
+        Numpy 벡터화된 rolling autocorrelation.
+        
+        pandas Series.autocorr() + rolling.apply(lambda) 대신
+        직접 상관계수를 계산하여 객체 생성 오버헤드 제거.
+        """
+        n = len(returns)
+        result = np.full(n, np.nan)
+        
+        if n < window + lag:
+            return result
+        
+        from numpy.lib.stride_tricks import sliding_window_view
+        windows = sliding_window_view(returns, window)
+        
+        for i in range(len(windows)):
+            w = windows[i]
+            if len(w) > lag:
+                x = w[:-lag]
+                y = w[lag:]
+                if len(x) > 1:
+                    mx, my = x.mean(), y.mean()
+                    sx, sy = x.std(), y.std()
+                    if sx > 1e-10 and sy > 1e-10:
+                        corr = np.mean((x - mx) * (y - my)) / (sx * sy)
+                        result[i + window - 1] = corr
+        
+        return result
 
     @staticmethod
     def _compute_entropy(returns: np.ndarray) -> float:
@@ -373,3 +447,57 @@ class FeatureEngineer:
             df[col] = df[col].fillna(0.0)
 
         return df
+
+    def _merge_intraday_returns(self, daily_df: pd.DataFrame,
+                                minute_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        분봉 데이터(09:00~09:30)에서 단기 수익률(Target Feature)과 
+        시초가 갭 피처(gap_pct)를 일봉 데이터 프레임에 병합합니다.
+        
+        ■ 미래참조 편향 차단 적용 (shift(-1)):
+          - T일 마감 기준 Feature 행에, T+1일 아침 갭하락(gap_pct) 정보와
+          - 5분 단위(T+1일 0905 ~ 0930) 타겟 수익률 6개를 맵핑.
+        """
+        try:
+            # 09:00 시초가 추출 (gap_pct 및 매수 단가 기준)
+            open_prices = minute_df[minute_df["time"].isin([900, 90000])][["date", "open"]].rename(columns={"open": "open_0900"})
+            
+            intra_df = open_prices.copy()
+            
+            # 다중 청산 타겟 (9:05, 9:10, 9:15, 9:20, 9:25, 9:30) 추출 및 수익률 계산
+            target_times = [905, 910, 915, 920, 925, 930]
+            
+            for t in target_times:
+                # 3자리(905), 4자리(0905), 5/6자리(90500) 호환성 고려
+                t_formats = [t, t * 100] 
+                close_df = minute_df[minute_df["time"].isin(t_formats)][["date", "close"]].rename(columns={"close": f"close_{t}"})
+                # 고유 기준(date) 하나만 남김 (중복 제거)
+                close_df = close_df.drop_duplicates(subset=['date'])
+                
+                intra_df = pd.merge(intra_df, close_df, on="date", how="left")
+                # (t분 종가 - 09:00 시초가) / 09:00 시초가 = t분 시점의 수익률
+                intra_df[f"ret_{t}"] = (intra_df[f"close_{t}"] - intra_df["open_0900"]) / intra_df["open_0900"]
+
+            # 일봉 df에 Left 병합
+            merged_df = daily_df.merge(intra_df, on="date", how="left")
+            
+            # 갭 피처 생성: (오늘 아침 09:00 시초가 - 어제 종가) / 어제 종가
+            # 먼저 같은 Row(당일) 기준으로 오늘치 갭을 계산한 뒤 당깁니다.
+            # 주의: 분봉 데이터 기준일의 0900분 시초가와 전거래일의 종가를 비교해야함
+            # 편의상 merged_df의 T일 종가("close")와 T+1일의 시가("open_0900".shift(-1))로 바로 계산
+            
+            merged_df["gap_pct"] = (merged_df["open_0900"].shift(-1) - merged_df["close"]) / merged_df["close"]
+            
+            # 타겟 수익률 6개 시프트 (-1) 적용
+            ret_cols = [f"ret_{t}" for t in target_times]
+            for col in ret_cols:
+                merged_df[col] = merged_df[col].shift(-1)
+                
+            # 불필요한 중간 임시 가격 컬럼 제외하고 반환
+            drop_cols = ["open_0900"] + [f"close_{t}" for t in target_times]
+            merged_df = merged_df.drop(columns=[c for c in drop_cols if c in merged_df.columns])
+            
+            return merged_df
+        except Exception as e:
+            logger.error(f"Failed to merge intraday targets & gap: {e}")
+            return daily_df

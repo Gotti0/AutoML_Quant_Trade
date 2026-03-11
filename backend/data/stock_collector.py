@@ -24,7 +24,7 @@ class StockCollector:
         self.client = client or BridgeClient()
 
     def collect_daily_all(self, tickers: List[str],
-                          count: int = None) -> int:
+                          count: Optional[int] = None) -> int:
         """
         복수 종목의 일봉 데이터를 일괄 수집하여 DB에 저장.
 
@@ -35,7 +35,7 @@ class StockCollector:
             수집 성공한 종목 수
         """
         count = count or Settings.DEFAULT_DAILY_COUNT
-        success_count = 0
+        success_count: int = 0
 
         for i, ticker in enumerate(tickers):
             try:
@@ -65,8 +65,8 @@ class StockCollector:
         Returns:
             수집 성공한 종목 수
         """
-        success_count = 0
-        skipped_count = 0
+        success_count: int = 0
+        skipped_count: int = 0
 
         for ticker in tickers:
             try:
@@ -101,8 +101,8 @@ class StockCollector:
         Returns:
             수집 성공한 종목 수
         """
-        success_count = 0
-        skipped_count = 0
+        success_count: int = 0
+        skipped_count: int = 0
         today = datetime.now()
 
         for ticker in tickers:
@@ -135,7 +135,7 @@ class StockCollector:
         return success_count
 
     def collect_minute(self, tickers: List[str],
-                       count: int = None) -> int:
+                       count: Optional[int] = None) -> int:
         """
         복수 종목의 분봉 데이터를 일괄 수집하여 DB에 저장.
 
@@ -146,14 +146,18 @@ class StockCollector:
             수집 성공한 종목 수
         """
         count = count or Settings.DEFAULT_MINUTE_COUNT
-        success_count = 0
+        success_count: int = 0
 
         for i, ticker in enumerate(tickers):
             try:
                 df = self.client.fetch_minute_chart(ticker, count)
                 if not df.empty:
-                    self.db.upsert_stock_minute(ticker, df)
-                    success_count += 1
+                    # 장 초반 분봉 (09:00 ~ 09:30)만 필터링 (time 컬럼: HHMM 포맷 가정 시 900 ~ 930)
+                    df = df[(df['time'] >= 900) & (df['time'] <= 930)]
+                    
+                    if not df.empty:
+                        self.db.upsert_stock_minute(ticker, df)
+                        success_count += 1
 
                 if (i + 1) % 20 == 0:
                     logger.info(f"Minute progress: {i + 1}/{len(tickers)} tickers collected")

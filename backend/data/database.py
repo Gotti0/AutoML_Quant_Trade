@@ -61,6 +61,10 @@ class DatabaseManager:
                     PRIMARY KEY (ticker, date, time)
                 )
             """)
+            cursor.execute("""
+                CREATE INDEX IF NOT EXISTS idx_stock_minute_time
+                ON stock_minute(time)
+            """)
 
             # 3. 해외 주식/지수 일봉 (CpSvrNew8300)
             cursor.execute("""
